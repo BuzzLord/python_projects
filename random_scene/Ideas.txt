@@ -1,0 +1,51 @@
+
+-------------------------------------------------------
+Scene: Based on a seed for easy-reproducability
+
+Random Room (Color/texture, wall positions/angles, windows?, static objects)
+Random objects (spheres, cubes)
+Objects moving randomly (start to finish position, rotation, speeds)
+Transparent objects, specular/shiny objects, lights
+Fading between two scenes, or cutting between them
+* Camera jitter, camera motion (later)
+----------------
+
+** NEW IDEA! For Light Field, do it all with the NN. As an Autoencoder, the "lightfield" can be the embedding from
+the encoder. Then the Decoder should be able to take the enbedding, and a vec3 position in space, and output a
+dome image. Giving it something like a (-1,0,0) will return the left image, and (1,0,0) the right image. But it
+can accept continuous values, to display any view (out to like (+/-2, +/-1, +/-1)).
+
+Only potential downfall is if decoding is too slow. If it's more than ~100 ms, that would be bad. My current CPU
+takes like 2x - 4x too long to decode a 5400x2700-60fps h265 video; so that's like 50 to 100 ms per frame, that should
+be < 16 ms. If decoding a light field is also 50 - 100 ms, then hardware will catch up soon enough. More than 100 ms is bad.
+Less than 20 ms would be awesome.
+
+For training the NN, feed it the image pairs and a position, then have that single position's output image as the target.
+So now instead of having to store potentially gigantic LF images, we store the embedding, an decode any view needed.
+For training, I can still generate a huge number of output images for an input pair (maybe on a grid, maybe scattered, 
+maybe a jittered grid): something like 16x8x8 output images per input pair.
+
+This also applies to video, training with bidirectional RNN layers on a series of frames.
+
+Possible future improvements if this works out: super temporal resolution. Have the decoder use several embeddings, and
+a fractional time t to indicate when the desired frame is, and output a fully interpolated inter-frame frame. This would 
+require training the autoencoder with temporally jittered values.
+
+******************************************
+** OLD IDEA: 
+Render Options:
+Rift option to see the scene. Render both dome/warped view, and light field. Can switch between normal, dome, LF.
+
+Non-Rift:
+Render to cube map and distort to the standard 180x180 dome view, output to file.
+Render to Light Field: 
+	Light field is a 2D array of sub views. Each subview is like a hemispherical view centered at that views "pixel" position.
+	Should this have a depth component? Probably not, but it would be neat with ASW.
+	Dimensions are: x, y, theta, phi
+		=> x, y select the subview, then theta, phi are used to calculate the exact pixel position to sample
+	To generate, can render width*height subviews, each as a mini 180x180 dome, using the cube map method.
+	Alternately, can render theta*phi different views, with an ortho projects such that the center of the pixels is
+	centered on the subviews centers. I think this might be the better way of encoding the light field, but can try this or the
+	array of subviews.
+	Output the final image to a file.
+
