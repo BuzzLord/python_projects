@@ -8,17 +8,17 @@ Z_AXIS = np.array([0., 0., 1.], dtype=np.float32)
 def transform(m, v):
     return np.asarray(m * np.asmatrix(v).T)[:,0]
 
-
 def magnitude(v):
-    return math.sqrt(np.sum(v ** 2))
-
+    return np.linalg.norm(v)
 
 def normalize(v):
     m = magnitude(v)
-    if m == 0:
+    if m < 1e-6:
         return v
     return v / m
 
+def invert(m):
+    return np.linalg.inv(m)
 
 def ortho(l, r, b, t, n, f):
     dx = r - l
