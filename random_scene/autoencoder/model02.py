@@ -1,4 +1,5 @@
 from __future__ import print_function
+import os
 import argparse
 import logging
 import math
@@ -269,7 +270,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * args.batch_size, len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
 
@@ -282,7 +283,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
         eye_images = torch.cat((input_data[:,0:3,:,:],input_data[:,3:6,:,:]), dim=3)
         images = torch.cat((novel_images,eye_images), dim=2)
         gen_pic = to_img(images)
-        save_image(gen_pic, './model02_img/image_{}.png'.format(epoch), nrow=4)
+        save_image(gen_pic, './{}/image_{}.png'.format(args.model_path, epoch), nrow=4)
 
 
 def test(args, model, device, test_loader, criterion):
@@ -297,7 +298,7 @@ def test(args, model, device, test_loader, criterion):
             test_loss += criterion(data_output, data_actual, reduction='sum').item()
 
     test_loss /= len(test_loader.dataset)
-    print('\nTest set: Average loss: {:.4f}\n'.format(test_loss))
+    logging.info('\nTest set: Average loss: {:.4f}\n'.format(test_loss))
 
 
 def main(custom_args=None):
@@ -309,6 +310,8 @@ def main(custom_args=None):
                         help='input batch size for testing (default: 48)')
     parser.add_argument('--epochs', type=int, default=20, metavar='N',
                         help='number of epochs to train (default: 20)')
+    parser.add_argument('--epoch-start', type=int, default=1, metavar='N',
+                        help='epoch number to start counting from')
     parser.add_argument('--momentum', type=float, default=0.5, metavar='M',
                         help='SGD momentum (default: 0.5)')
     parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
@@ -323,9 +326,28 @@ def main(custom_args=None):
                         help='uses SGD instead of Adam')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
                         help='random seed (default: 1)')
+    parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
+                        help='filename to pre-trained model state to load')
+    parser.add_argument('--model-path', type=str, default="model02_img", metavar='PATH',
+                        help='pathname for this models output (default model02_img)')
     parser.add_argument('--log-interval', type=int, default=50, metavar='N',
                         help='how many batches to wait before logging training status')
+    parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
+                        help='filename to log output to')
     args = parser.parse_args(args=custom_args)
+
+    if len(args.log_file) > 0:
+        log_formatter = logging.Formatter("%(asctime)s: %(message)s")
+        root_logger = logging.getLogger()
+
+        file_handler = logging.FileHandler("{0}/{1}".format(args.model_path, args.log_file))
+        file_handler.setFormatter(log_formatter)
+        root_logger.addHandler(file_handler)
+
+        # console_handler = logging.StreamHandler()
+        # console_handler.setFormatter(log_formatter)
+        # root_logger.addHandler(console_handler)
+
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     torch.manual_seed(args.seed)
@@ -345,16 +367,24 @@ def main(custom_args=None):
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
-    model = Net().to(device)
+    model = Net()
+    if len(args.load_model_state) > 0:
+        model_path = os.path.join(args.model_path, args.load_model_state)
+        if os.path.exists(model_path):
+            model.load_state_dict(torch.load(model_path))
+            model.eval()
+    model = model.to(device)
+
     if args.use_sgd:
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     else:
         optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(args.beta1, args.beta2))
     criterion = ModelLoss(device=device)
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
         train(args, model, device, train_loader, criterion, optimizer, epoch)
         test(args, model, device, test_loader, criterion)
+        torch.save(model.state_dict(), "./{}/model_state_{}.pth".format(args.model_path, epoch))
 
 
 if __name__ == '__main__':
