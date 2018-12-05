@@ -119,12 +119,10 @@ class Net(nn.Module):
     def __init__(self, downsample_method='conv', upsample_method='conv'):
         super(Net, self).__init__()
         # width = 256, height = 256
-        # 9 = RGB Left, RGB Right, XYZ Position
+        # 12 = RGB Left, RGB Right, XYZ* Position
 
-        # downsample_method = 'maxpool'
-        # upsample_method = 'interpolate'
-        # downsample_method = 'conv'
-        # upsample_method = 'conv'
+        # downsample_method = ['maxpool', 'conv']
+        # upsample_method = ['interpolate', 'conv']
 
         # Position upsample stage
         # Input: b, 3, 1, 1
@@ -133,20 +131,19 @@ class Net(nn.Module):
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
             BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 4, 4
-            BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 8, 8
-            BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 16, 16
-            BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 32, 32
-            BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 64, 64
+            BasicConvTransposeBlock(16, 24, upsample_method=upsample_method),   # b, 24, 8, 8
+            BasicConvTransposeBlock(24, 32, upsample_method=upsample_method),   # b, 32, 16, 16
+            BasicConvTransposeBlock(32, 24, upsample_method=upsample_method),   # b, 24, 32, 32
+            BasicConvTransposeBlock(24, 16, upsample_method=upsample_method),   # b, 16, 64, 64
             BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 128, 128
-            nn.ConvTranspose2d(16, 3, kernel_size=3, stride=1, padding=1, bias=False)
-        )  # b, 3, 128, 128
+            nn.ConvTranspose2d(16, 16, kernel_size=3, stride=1, padding=1, bias=False)
+        )  # b, 16, 128, 128
 
-        # Input: b, 9, 256, 256
+        # Input: b, 22, 256, 256
         self.encoder_block1 = nn.Sequential(
-            nn.Conv2d(9, 32, kernel_size=5, stride=1, padding=2, bias=False),
+            nn.Conv2d(22, 32, kernel_size=5, stride=1, padding=2, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            # nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
             BasicConvBlock(32, 32)
         )  # b, 32, 256, 256
         self.encoder_block2 = nn.Sequential(
@@ -309,7 +306,7 @@ def test(args, model, device, test_loader, criterion):
 
 def main(custom_args=None):
     # Training settings
-    parser = argparse.ArgumentParser(description='PyTorch Model 02 Experiment')
+    parser = argparse.ArgumentParser(description='PyTorch Model 03 Experiment')
     parser.add_argument('--batch-size', type=int, default=24, metavar='N',
                         help='input batch size for training (default: 24)')
     parser.add_argument('--test-batch-size', type=int, default=48, metavar='N',
@@ -334,8 +331,8 @@ def main(custom_args=None):
                         help='random seed (default: 1)')
     parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
                         help='filename to pre-trained model state to load')
-    parser.add_argument('--model-path', type=str, default="model02_img", metavar='PATH',
-                        help='pathname for this models output (default model02_img)')
+    parser.add_argument('--model-path', type=str, default="model03", metavar='PATH',
+                        help='pathname for this models output (default model03)')
     parser.add_argument('--log-interval', type=int, default=50, metavar='N',
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
@@ -390,9 +387,9 @@ def main(custom_args=None):
         logging.info("Using SGD optimizer with LR = {}, M = {}".format(args.lr, args.momentum))
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     else:
-        logging.info("Using Adam optimizer with LR = {}, B1 = {}".format(args.lr, args.beta1))
+        logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {})".format(args.lr, args.beta1, args.beta2))
         optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(args.beta1, args.beta2))
-    criterion = ModelLoss(device=device, value_weight=0.5, edge_weight=0.5)
+    criterion = ModelLoss(device=device, value_weight=0.7, edge_weight=0.3)
     logging.info("Model loss using value weight {} and edge weight {}".format(criterion.value_weight, criterion.edge_weight))
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
