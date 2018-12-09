@@ -14,9 +14,49 @@ from torchvision.utils import save_image
 import dataloader as dl
 
 
-class BasicConvBlock(nn.Module):
-    def __init__(self, inplanes, planes, downsample_method=None):
-        super(BasicConvBlock, self).__init__()
+class SelfAttention(nn.Module):
+    def __init__(self, inplanes, query_planes=None, resample_kernel=1):
+        super().__init__()
+
+        self.query_planes = query_planes or inplanes // 8
+
+        self.query = nn.Conv1d(inplanes, self.query_planes, 1)
+        self.key = nn.Conv1d(inplanes, self.query_planes, 1)
+        self.value = nn.Conv1d(inplanes, inplanes, 1)
+
+        self.gamma = nn.Parameter(torch.tensor(0.0))
+
+        if resample_kernel > 1:
+            self.downsample = nn.MaxPool2d(kernel_size=resample_kernel)
+            self.upsample = UpsampleInterpolate(scale_factor=float(resample_kernel))
+        else:
+            self.downsample = None
+            self.upsample = None
+
+    def forward(self, input):
+        x = input
+        if self.downsample is not None:
+            x = self.downsample(x)
+
+        shape = x.shape
+        flatten = x.view(shape[0], shape[1], -1)
+        query = self.query(flatten).permute(0, 2, 1)
+        key = self.key(flatten)
+        value = self.value(flatten)
+        query_key = torch.bmm(query, key)
+        attn = F.softmax(query_key, 1)
+        attn = torch.bmm(value, attn)
+        attn = attn.view(*shape)
+        if self.upsample is not None:
+            attn = self.upsample(attn)
+        out = self.gamma * attn + input
+
+        return out
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, inplanes, planes, downsample_method=None, attention_kernel=None):
+        super(ConvBlock, self).__init__()
 
         if downsample_method == "conv":
             self.stage1 = nn.Sequential(
@@ -50,7 +90,11 @@ class BasicConvBlock(nn.Module):
         self.stage2 = nn.Sequential(
             nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(planes))
-        self.relu = nn.ReLU(inplace=True)
+        self.activation = nn.ReLU(inplace=True)
+        if attention_kernel is not None:
+            self.attention = SelfAttention(planes, resample_kernel=attention_kernel)
+        else:
+            self.attention = None
 
     def forward(self, x):
         residual = x
@@ -62,7 +106,10 @@ class BasicConvBlock(nn.Module):
             residual = self.downsample(x)
 
         out += residual
-        out = self.relu(out)
+        out = self.activation(out)
+
+        if self.attention is not None:
+            out = self.attention(out)
 
         return out
 
@@ -76,10 +123,10 @@ class UpsampleInterpolate(nn.Module):
         return F.interpolate(x, scale_factor=self.scale_factor)
 
 
-class BasicConvTransposeBlock(nn.Module):
+class ConvTransposeBlock(nn.Module):
 
-    def __init__(self, inplanes, planes, upsample_method=None):
-        super(BasicConvTransposeBlock, self).__init__()
+    def __init__(self, inplanes, planes, upsample_method=None, attention_kernel=None):
+        super(ConvTransposeBlock, self).__init__()
 
         if upsample_method == "conv":
             self.stage1 = nn.Sequential(
@@ -105,12 +152,19 @@ class BasicConvTransposeBlock(nn.Module):
             nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(planes)
         )
-        self.relu = nn.ReLU(inplace=True)
+        self.activation = nn.ReLU(inplace=True)
+        if attention_kernel is not None:
+            self.attention = SelfAttention(planes, resample_kernel=attention_kernel)
+        else:
+            self.attention = None
 
     def forward(self, x):
         out = self.stage1(x)
         out = self.stage2(out)
-        out = self.relu(out)
+        out = self.activation(out)
+
+        if self.attention is not None:
+            out = self.attention(out)
 
         return out
 
@@ -130,66 +184,66 @@ class Net(nn.Module):
             nn.ConvTranspose2d(3, 16, 2, stride=1, padding=0),                  # b, 16, 2, 2
             nn.BatchNorm2d(16),
             nn.ReLU(inplace=True),
-            BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 4, 4
-            BasicConvTransposeBlock(16, 24, upsample_method=upsample_method),   # b, 24, 8, 8
-            BasicConvTransposeBlock(24, 32, upsample_method=upsample_method),   # b, 32, 16, 16
-            BasicConvTransposeBlock(32, 24, upsample_method=upsample_method),   # b, 24, 32, 32
-            BasicConvTransposeBlock(24, 16, upsample_method=upsample_method),   # b, 16, 64, 64
-            BasicConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 128, 128
-            nn.ConvTranspose2d(16, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        )  # b, 16, 128, 128
+            ConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 4, 4
+            ConvTransposeBlock(16, 24, upsample_method=upsample_method),   # b, 24, 8, 8
+            ConvTransposeBlock(24, 32, upsample_method=upsample_method),   # b, 32, 16, 16
+            ConvTransposeBlock(32, 24, upsample_method=upsample_method),   # b, 24, 32, 32
+            ConvTransposeBlock(24, 16, upsample_method=upsample_method),   # b, 16, 64, 64
+            ConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 128, 128
+            nn.ConvTranspose2d(16, 6, kernel_size=3, stride=1, padding=1, bias=False)
+        )  # b, 6, 128, 128
 
-        # Input: b, 22, 256, 256
+        # Input: b, 12, 256, 256
         self.encoder_block1 = nn.Sequential(
-            nn.Conv2d(22, 32, kernel_size=5, stride=1, padding=2, bias=False),
+            nn.Conv2d(12, 32, kernel_size=5, stride=1, padding=2, bias=False),
             nn.BatchNorm2d(32),
             nn.ReLU(inplace=True),
-            BasicConvBlock(32, 32)
+            ConvBlock(32, 32, attention_kernel=4)
         )  # b, 32, 256, 256
         self.encoder_block2 = nn.Sequential(
-            BasicConvBlock(32, 43, downsample_method=downsample_method),
-            BasicConvBlock(43, 43)
+            ConvBlock(32, 43, downsample_method=downsample_method),
+            ConvBlock(43, 43, attention_kernel=2)
         )  # b, 43, 128, 128
         self.encoder_block3 = nn.Sequential(
-            BasicConvBlock(43, 57, downsample_method=downsample_method),
-            BasicConvBlock(57, 57)
+            ConvBlock(43, 57, downsample_method=downsample_method),
+            ConvBlock(57, 57, attention_kernel=1)
         )  # b, 57, 64, 64
         self.encoder_block4 = nn.Sequential(
-            BasicConvBlock(57, 76, downsample_method=downsample_method),
-            BasicConvBlock(76, 76)
+            ConvBlock(57, 76, downsample_method=downsample_method),
+            ConvBlock(76, 76)
         )  # b, 76, 32, 32
         self.encoder_block5 = nn.Sequential(
-            BasicConvBlock(76, 101, downsample_method=downsample_method),
-            BasicConvBlock(101, 101)
+            ConvBlock(76, 101, downsample_method=downsample_method),
+            ConvBlock(101, 101)
         )  # b, 101, 16, 16
         self.encoder_block6 = nn.Sequential(
-            BasicConvBlock(101, 135, downsample_method=downsample_method),
-            BasicConvBlock(135, 135)
+            ConvBlock(101, 135, downsample_method=downsample_method),
+            ConvBlock(135, 135)
         )  # b, 135, 8, 8
 
         # Input: b, 135, 8, 8
         self.decoder_block1 = nn.Sequential(
-            BasicConvTransposeBlock(135, 101, upsample_method=upsample_method),
-            BasicConvTransposeBlock(101, 101)
+            ConvTransposeBlock(135, 101, upsample_method=upsample_method),
+            ConvTransposeBlock(101, 101)
         )  # b, 101, 16, 16
         self.decoder_block2 = nn.Sequential(
-            BasicConvTransposeBlock(101 * 2, 76, upsample_method=upsample_method),
-            BasicConvTransposeBlock(76, 76)
+            ConvTransposeBlock(101 * 2, 76, upsample_method=upsample_method),
+            ConvTransposeBlock(76, 76)
         )  # b, 76, 32, 32
         self.decoder_block3 = nn.Sequential(
-            BasicConvTransposeBlock(76 * 2, 57, upsample_method=upsample_method),
-            BasicConvTransposeBlock(57, 57)
+            ConvTransposeBlock(76 * 2, 57, upsample_method=upsample_method),
+            ConvTransposeBlock(57, 57, attention_kernel=1)
         )  # b, 57, 64, 64
         self.decoder_block4 = nn.Sequential(
-            BasicConvTransposeBlock(57 * 2, 43, upsample_method=upsample_method),
-            BasicConvTransposeBlock(43, 43)
+            ConvTransposeBlock(57 * 2, 43, upsample_method=upsample_method),
+            ConvTransposeBlock(43, 43, attention_kernel=2)
         )  # b, 43, 128, 128
         self.decoder_block5 = nn.Sequential(
-            BasicConvTransposeBlock(43 * 2, 32, upsample_method=upsample_method),
-            BasicConvTransposeBlock(32, 32)
+            ConvTransposeBlock(43 * 2, 32, upsample_method=upsample_method),
+            ConvTransposeBlock(32, 32, attention_kernel=4)
         )  # b, 32, 256, 256
         self.decoder_block6 = nn.Sequential(
-            BasicConvTransposeBlock(32 * 2, 32),
+            ConvTransposeBlock(32 * 2, 32),
             nn.ConvTranspose2d(32, 3, kernel_size=3, stride=1, padding=1, bias=False),
             nn.Tanh()
         )  # b, 3, 256, 256
@@ -248,7 +302,7 @@ class ModelLoss(nn.Module):
                      requires_grad=False)
         return torch.cat((f, f, f), dim=1)
 
-    def forward(self, input, target, reduction='elementwise_mean'):
+    def forward(self, input, target, reduction='mean'):
         value_l1_loss = F.l1_loss(input, target, reduction=reduction)
         input_log_edges = F.conv2d(input, self.log_filter, padding=1)
         target_log_edges = F.conv2d(target, self.log_filter, padding=1)
@@ -323,6 +377,8 @@ def main(custom_args=None):
                         help='Adam beta 1 (default: 0.9)')
     parser.add_argument('--beta2', type=float, default=0.999, metavar='B2',
                         help='Adam beta 2 (default: 0.999)')
+    parser.add_argument('--weight-decay', type=float, default=0.0, metavar='D',
+                        help='Weight decay (default: 0.0)')
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--use-sgd', action='store_true', default=False,
@@ -347,12 +403,12 @@ def main(custom_args=None):
         file_handler.setFormatter(log_formatter)
         root_logger.addHandler(file_handler)
 
-        # console_handler = logging.StreamHandler()
-        # console_handler.setFormatter(log_formatter)
-        # root_logger.addHandler(console_handler)
+    if not os.path.exists(args.model_path):
+        os.mkdir(args.model_path)
 
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
+    logging.info("Using random seed " + str(args.seed))
     torch.manual_seed(args.seed)
 
     device = torch.device("cuda" if use_cuda else "cpu")
@@ -360,7 +416,7 @@ def main(custom_args=None):
     kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
 
     dataset_resample = 0.5
-    dataset_subsample = 0.25
+    dataset_subsample = 0.5
     logging.info("Building dataset with resample rate {} and subsample rate {}".format(dataset_resample,dataset_subsample))
     dataset_transforms = transforms.Compose([dl.ResampleImages(dataset_resample),
                                              dl.SubsampleImages(dataset_subsample),
@@ -388,7 +444,7 @@ def main(custom_args=None):
         optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
     else:
         logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {})".format(args.lr, args.beta1, args.beta2))
-        optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(args.beta1, args.beta2))
+        optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(args.beta1, args.beta2), weight_decay=args.weight_decay)
     criterion = ModelLoss(device=device, value_weight=0.7, edge_weight=0.3)
     logging.info("Model loss using value weight {} and edge weight {}".format(criterion.value_weight, criterion.edge_weight))
 
