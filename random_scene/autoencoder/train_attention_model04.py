@@ -3,15 +3,16 @@ from model04 import *
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO, format='%(message)s')
-    common_args = ["--model-path", "attention", "--epochs", "2"]
+    num_epochs = 2
+    common_args = ["--model-path", "attention", "--epochs", str(num_epochs), "--seed", "1234"]
     logging_args = ["--log-file", "train_atten.log"]
-    main(common_args + ["--attention", "e1", "4"] + logging_args)
-    main(common_args + ["--epoch-start", "3", "--attention", "e2", "2"])
-    main(common_args + ["--epoch-start", "5", "--attention", "e3", "1"])
-    main(common_args + ["--epoch-start", "7", "--attention", "e4", "1"])
-    main(common_args + ["--epoch-start", "9", "--attention", "e5", "1"])
-    main(common_args + ["--epoch-start", "11", "--attention", "d1", "1"])
-    main(common_args + ["--epoch-start", "13", "--attention", "d2", "1"])
-    main(common_args + ["--epoch-start", "15", "--attention", "d3", "1"])
-    main(common_args + ["--epoch-start", "17", "--attention", "d4", "2"])
-    main(common_args + ["--epoch-start", "19", "--attention", "d5", "4"])
+    main(common_args + ["--epoch-start", str(1+0*num_epochs), "--attention", "e1", "4"] + logging_args)
+    main(common_args + ["--epoch-start", str(1+1*num_epochs), "--attention", "e2", "2"])
+    main(common_args + ["--epoch-start", str(1+2*num_epochs), "--attention", "e3", "1"])
+    main(common_args + ["--epoch-start", str(1+3*num_epochs), "--attention", "e4", "1"])
+    main(common_args + ["--epoch-start", str(1+4*num_epochs), "--attention", "e5", "1"])
+    main(common_args + ["--epoch-start", str(1+5*num_epochs), "--attention", "d1", "1"])
+    main(common_args + ["--epoch-start", str(1+6*num_epochs), "--attention", "d2", "1"])
+    main(common_args + ["--epoch-start", str(1+7*num_epochs), "--attention", "d3", "1"])
+    main(common_args + ["--epoch-start", str(1+8*num_epochs), "--attention", "d4", "2"])
+    main(common_args + ["--epoch-start", str(1+9*num_epochs), "--attention", "d5", "4"])
