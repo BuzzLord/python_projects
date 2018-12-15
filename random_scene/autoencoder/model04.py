@@ -24,11 +24,11 @@ class SelfAttention(nn.Module):
         self.key = nn.Conv1d(inplanes, self.query_planes, 1)
         self.value = nn.Conv1d(inplanes, inplanes, 1)
 
-        self.gamma = nn.Parameter(torch.tensor(0.0))
+        self.gamma = nn.Parameter(torch.Tensor([0.0]).squeeze())
 
         if resample_kernel > 1:
             self.downsample = nn.MaxPool2d(kernel_size=resample_kernel)
-            self.upsample = UpsampleInterpolate(scale_factor=float(resample_kernel))
+            self.upsample = UpsampleInterpolate(scale_factor=resample_kernel)
         else:
             self.downsample = None
             self.upsample = None
@@ -44,25 +44,26 @@ class SelfAttention(nn.Module):
         key = self.key(flatten)
         value = self.value(flatten)
         query_key = torch.bmm(query, key)
-        attn = F.softmax(query_key, 1)
-        attn = torch.bmm(value, attn)
-        attn = attn.view(*shape)
+        attention = F.softmax(query_key, 1)
+        attention = torch.bmm(value, attention)
+        attention = attention.view(*shape)
         if self.upsample is not None:
-            attn = self.upsample(attn)
-        out = self.gamma * attn + input
+            attention = self.upsample(attention)
+        out = self.gamma * attention + input
 
         return out
 
 
 class ConvBlock(nn.Module):
-    def __init__(self, inplanes, planes, downsample_method=None, attention_kernel=None):
+    def __init__(self, inplanes, planes, downsample_method=None,
+                 attention_kernel=None, activation=nn.ReLU(inplace=True)):
         super(ConvBlock, self).__init__()
 
         if downsample_method == "conv":
             self.stage1 = nn.Sequential(
                 nn.Conv2d(inplanes, planes, kernel_size=2, stride=2, padding=0, bias=False),
                 nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True)
+                activation
             )
             self.downsample = nn.Sequential(
                 nn.Conv2d(inplanes, planes, kernel_size=1, stride=2, padding=0, bias=False),
@@ -72,7 +73,7 @@ class ConvBlock(nn.Module):
             self.stage1 = nn.Sequential(
                 nn.Conv2d(inplanes, planes, kernel_size=1, stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True),
+                activation,
                 nn.MaxPool2d(kernel_size=2)
             )
             self.downsample = nn.Sequential(
@@ -83,14 +84,14 @@ class ConvBlock(nn.Module):
             self.stage1 = nn.Sequential(
                 nn.Conv2d(inplanes, planes, kernel_size=3, stride=1, padding=1, bias=False),
                 nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True)
+                activation
             )
             self.downsample = None
 
         self.stage2 = nn.Sequential(
             nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(planes))
-        self.activation = nn.ReLU(inplace=True)
+        self.activation = activation
         if attention_kernel is not None:
             self.attention = SelfAttention(planes, resample_kernel=attention_kernel)
         else:
@@ -115,44 +116,56 @@ class ConvBlock(nn.Module):
 
 
 class UpsampleInterpolate(nn.Module):
-    def __init__(self, scale_factor=2.0):
+    def __init__(self, scale_factor=(2.0,2.0), mode=None):
         super(UpsampleInterpolate, self).__init__()
+        if mode is None:
+            self.mode = 'nearest'
+            if isinstance(scale_factor, tuple):
+                for i in range(len(scale_factor)):
+                    if abs(scale_factor[i]) < 1.0:
+                        self.mode = 'area'
+            else:
+                if abs(scale_factor) < 1.0:
+                    self.mode = 'area'
+        else:
+            self.mode = mode
         self.scale_factor = scale_factor
 
     def forward(self, x):
-        return F.interpolate(x, scale_factor=self.scale_factor)
+        return F.interpolate(x, scale_factor=self.scale_factor, mode=self.mode)
 
 
 class ConvTransposeBlock(nn.Module):
 
-    def __init__(self, inplanes, planes, upsample_method=None, attention_kernel=None):
+    def __init__(self, inplanes, planes, upsample_method=None,
+                 attention_kernel=None, activation=nn.ReLU(inplace=True)):
         super(ConvTransposeBlock, self).__init__()
 
         if upsample_method == "conv":
             self.stage1 = nn.Sequential(
                 nn.ConvTranspose2d(inplanes, planes, kernel_size=2, stride=2, padding=0, bias=False),
                 nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True)
+                activation
             )
         elif upsample_method == "interpolate":
             self.stage1 = nn.Sequential(
                 nn.ConvTranspose2d(inplanes, planes, kernel_size=1, stride=1, padding=0, bias=False),
                 nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True),
-                UpsampleInterpolate(scale_factor=2.0)
+                activation,
+                UpsampleInterpolate()
             )
         else:
             self.stage1 = nn.Sequential(
                 nn.ConvTranspose2d(inplanes, planes, kernel_size=3, stride=1, padding=1, bias=False),
                 nn.BatchNorm2d(planes),
-                nn.ReLU(inplace=True)
+                activation
             )
 
         self.stage2 = nn.Sequential(
             nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(planes)
         )
-        self.activation = nn.ReLU(inplace=True)
+        self.activation = activation
         if attention_kernel is not None:
             self.attention = SelfAttention(planes, resample_kernel=attention_kernel)
         else:
@@ -170,51 +183,55 @@ class ConvTransposeBlock(nn.Module):
 
 
 class Net(nn.Module):
-    def __init__(self, downsample_method='conv', upsample_method='conv'):
+    def __init__(self, downsample_method='conv', upsample_method='conv', target_resolution=(256,256), attention={},
+                 activation=nn.ReLU(inplace=True)):
         super(Net, self).__init__()
-        # width = 256, height = 256
-        # 12 = RGB Left, RGB Right, XYZ* Position
-
-        # downsample_method = ['maxpool', 'conv']
-        # upsample_method = ['interpolate', 'conv']
+        if target_resolution < (32, 32):
+            raise ValueError('target resolution should have dimensions at least (32,32)')
+        if downsample_method not in ['maxpool', 'conv']:
+            raise ValueError('expecting downsample method conv or maxpool')
+        if upsample_method not in ['interpolate', 'conv']:
+            raise ValueError('expecting upsample method interpolate or maxpool')
 
         # Position upsample stage
         # Input: b, 3, 1, 1
         self.position_upsample = nn.Sequential(
             nn.ConvTranspose2d(3, 16, 2, stride=1, padding=0),                  # b, 16, 2, 2
             nn.BatchNorm2d(16),
-            nn.ReLU(inplace=True),
+            activation,
             ConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 4, 4
             ConvTransposeBlock(16, 24, upsample_method=upsample_method),   # b, 24, 8, 8
             ConvTransposeBlock(24, 32, upsample_method=upsample_method),   # b, 32, 16, 16
-            ConvTransposeBlock(32, 24, upsample_method=upsample_method),   # b, 24, 32, 32
-            ConvTransposeBlock(24, 16, upsample_method=upsample_method),   # b, 16, 64, 64
-            ConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 128, 128
+            UpsampleInterpolate(scale_factor=(target_resolution[0]/128, target_resolution[1]/128)),  # b, 32, 32, 32
+            ConvTransposeBlock(32, 24, upsample_method=upsample_method),   # b, 24, 64, 64
+            ConvTransposeBlock(24, 16, upsample_method=upsample_method),   # b, 16, 128, 128
+            ConvTransposeBlock(16, 16, upsample_method=upsample_method),   # b, 16, 256, 256
             nn.ConvTranspose2d(16, 6, kernel_size=3, stride=1, padding=1, bias=False)
-        )  # b, 6, 128, 128
+        )  # b, 6, 256, 256
 
+        # 12 = RGB Left, RGB Right, XYZ* extended position
         # Input: b, 12, 256, 256
         self.encoder_block1 = nn.Sequential(
             nn.Conv2d(12, 32, kernel_size=5, stride=1, padding=2, bias=False),
             nn.BatchNorm2d(32),
-            nn.ReLU(inplace=True),
-            ConvBlock(32, 32, attention_kernel=4)
+            activation,
+            ConvBlock(32, 32, attention_kernel=attention['e1'] if 'e1' in attention else None)
         )  # b, 32, 256, 256
         self.encoder_block2 = nn.Sequential(
             ConvBlock(32, 43, downsample_method=downsample_method),
-            ConvBlock(43, 43, attention_kernel=2)
+            ConvBlock(43, 43, attention_kernel=attention['e2'] if 'e2' in attention else None)
         )  # b, 43, 128, 128
         self.encoder_block3 = nn.Sequential(
             ConvBlock(43, 57, downsample_method=downsample_method),
-            ConvBlock(57, 57, attention_kernel=1)
+            ConvBlock(57, 57, attention_kernel=attention['e3'] if 'e3' in attention else None)
         )  # b, 57, 64, 64
         self.encoder_block4 = nn.Sequential(
             ConvBlock(57, 76, downsample_method=downsample_method),
-            ConvBlock(76, 76)
+            ConvBlock(76, 76, attention_kernel=attention['e4'] if 'e4' in attention else None)
         )  # b, 76, 32, 32
         self.encoder_block5 = nn.Sequential(
             ConvBlock(76, 101, downsample_method=downsample_method),
-            ConvBlock(101, 101)
+            ConvBlock(101, 101, attention_kernel=attention['e5'] if 'e5' in attention else None)
         )  # b, 101, 16, 16
         self.encoder_block6 = nn.Sequential(
             ConvBlock(101, 135, downsample_method=downsample_method),
@@ -224,23 +241,23 @@ class Net(nn.Module):
         # Input: b, 135, 8, 8
         self.decoder_block1 = nn.Sequential(
             ConvTransposeBlock(135, 101, upsample_method=upsample_method),
-            ConvTransposeBlock(101, 101)
+            ConvTransposeBlock(101, 101, attention_kernel=attention['d1'] if 'd1' in attention else None)
         )  # b, 101, 16, 16
         self.decoder_block2 = nn.Sequential(
             ConvTransposeBlock(101 * 2, 76, upsample_method=upsample_method),
-            ConvTransposeBlock(76, 76)
+            ConvTransposeBlock(76, 76, attention_kernel=attention['d2'] if 'd2' in attention else None)
         )  # b, 76, 32, 32
         self.decoder_block3 = nn.Sequential(
             ConvTransposeBlock(76 * 2, 57, upsample_method=upsample_method),
-            ConvTransposeBlock(57, 57, attention_kernel=1)
+            ConvTransposeBlock(57, 57, attention_kernel=attention['d3'] if 'd3' in attention else None)
         )  # b, 57, 64, 64
         self.decoder_block4 = nn.Sequential(
             ConvTransposeBlock(57 * 2, 43, upsample_method=upsample_method),
-            ConvTransposeBlock(43, 43, attention_kernel=2)
+            ConvTransposeBlock(43, 43, attention_kernel=attention['d4'] if 'd4' in attention else None)
         )  # b, 43, 128, 128
         self.decoder_block5 = nn.Sequential(
             ConvTransposeBlock(43 * 2, 32, upsample_method=upsample_method),
-            ConvTransposeBlock(32, 32, attention_kernel=4)
+            ConvTransposeBlock(32, 32, attention_kernel=attention['d5'] if 'd5' in attention else None)
         )  # b, 32, 256, 256
         self.decoder_block6 = nn.Sequential(
             ConvTransposeBlock(32 * 2, 32),
@@ -289,8 +306,7 @@ class Net(nn.Module):
 class ModelLoss(nn.Module):
     def __init__(self, device, value_weight=0.9, edge_weight=0.1):
         super(ModelLoss, self).__init__()
-        edge_filter = ModelLoss.generate_filter()
-        self.log_filter = edge_filter.to(device)
+        self.edge_filter = ModelLoss.generate_filter().to(device)
         self.value_weight = value_weight
         self.edge_weight = edge_weight
 
@@ -304,8 +320,8 @@ class ModelLoss(nn.Module):
 
     def forward(self, input, target, reduction='mean'):
         value_l1_loss = F.l1_loss(input, target, reduction=reduction)
-        input_log_edges = F.conv2d(input, self.log_filter, padding=1)
-        target_log_edges = F.conv2d(target, self.log_filter, padding=1)
+        input_log_edges = F.conv2d(input, self.edge_filter, padding=1)
+        target_log_edges = F.conv2d(target, self.edge_filter, padding=1)
         edge_l1_loss = F.l1_loss(input_log_edges, target_log_edges, reduction=reduction)
         return value_l1_loss * self.value_weight + edge_l1_loss * self.edge_weight
 
@@ -325,21 +341,13 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * args.batch_size, len(train_loader.dataset),
                 100. * batch_idx / len(train_loader), loss.item()))
-            # with torch.no_grad():
-            #     ratios = [torch.mean((torch.abs(param.grad * args.lr) / (torch.abs(param) + 1e-9))).view(-1).item()
-            #     for param in model.parameters()]
-            #     logging.info("Min {:.4e}, max {:.4e}, mean: {:.4e}, stdev: {:.4e}".format(min(ratios),max(ratios),
-            #     mean(ratios),stdev(ratios)))
-
-    def to_img(x):
-        return ((x * 0.5) + 0.5).clamp(0,1)
 
     if epoch % 1 == 0:
         novel_images = torch.cat((data_output.cpu().data,data_actual.cpu().data), dim=3)
         input_data = data_input.cpu().data
         eye_images = torch.cat((input_data[:,0:3,:,:],input_data[:,3:6,:,:]), dim=3)
         images = torch.cat((novel_images,eye_images), dim=2)
-        gen_pic = to_img(images)
+        gen_pic = ((images * 0.5) + 0.5).clamp(0,1)
         save_image(gen_pic, './{}/image_{}.png'.format(args.model_path, epoch), nrow=4)
 
 
@@ -360,7 +368,7 @@ def test(args, model, device, test_loader, criterion):
 
 def main(custom_args=None):
     # Training settings
-    parser = argparse.ArgumentParser(description='PyTorch Model 03 Experiment')
+    parser = argparse.ArgumentParser(description='PyTorch Model 04 Experiment')
     parser.add_argument('--batch-size', type=int, default=32, metavar='N',
                         help='input batch size for training (default: 32)')
     parser.add_argument('--test-batch-size', type=int, default=64, metavar='N',
@@ -387,12 +395,24 @@ def main(custom_args=None):
                         help='random seed (default: 1)')
     parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
                         help='filename to pre-trained model state to load')
-    parser.add_argument('--model-path', type=str, default="model03", metavar='PATH',
-                        help='pathname for this models output (default model03)')
+    parser.add_argument('--model-path', type=str, default="model04", metavar='PATH',
+                        help='pathname for this models output (default model04)')
     parser.add_argument('--log-interval', type=int, default=50, metavar='N',
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
                         help='filename to log output to')
+    parser.add_argument('--dataset-resample', type=float, default=0.5, metavar='R',
+                        help='resample/resize the dataset images (default 0.5)')
+    parser.add_argument('--dataset-subsample', type=float, default=0.5, metavar='S',
+                        help='subsample the dataset images to improve training (default 0.5)')
+    parser.add_argument('--loss-val-weight', type=float, default=0.75, metavar='V',
+                        help='model loss value weight (default 0.75)')
+    parser.add_argument('--loss-edge-weight', type=float, default=0.25, metavar='E',
+                        help='model loss edge weight (default 0.25)')
+    parser.add_argument('--attention', type=str, nargs='+',
+                        help='attention parameters: layer/block code, resample kernel.')
+    parser.add_argument('--leaky_relu', type=float, metavar='S',
+                        help='use leaky relu activation with given negative slope')
     args = parser.parse_args(args=custom_args)
 
     if not os.path.exists(args.model_path):
@@ -402,7 +422,7 @@ def main(custom_args=None):
         log_formatter = logging.Formatter("%(asctime)s: %(message)s")
         root_logger = logging.getLogger()
 
-        file_handler = logging.FileHandler("{0}/{1}".format(args.model_path, args.log_file))
+        file_handler = logging.FileHandler("{}/{}".format(args.model_path, args.log_file))
         file_handler.setFormatter(log_formatter)
         root_logger.addHandler(file_handler)
 
@@ -415,11 +435,9 @@ def main(custom_args=None):
 
     kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
 
-    dataset_resample = 0.5
-    dataset_subsample = 1.0
-    logging.info("Building dataset with resample rate {} and subsample rate {}".format(dataset_resample,dataset_subsample))
-    dataset_transforms = transforms.Compose([dl.ResampleImages(dataset_resample),
-                                             dl.SubsampleImages(dataset_subsample),
+    logging.info("Building dataset with resample rate {} and subsample rate {}".format(args.dataset_resample, args.dataset_subsample))
+    dataset_transforms = transforms.Compose([dl.ResampleImages(args.dataset_resample),
+                                             dl.SubsampleImages(args.dataset_subsample),
                                              dl.ToTensor(),
                                              dl.NormalizeImages(
                                                  mean=[0.5, 0.5, 0.5],
@@ -430,7 +448,10 @@ def main(custom_args=None):
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
-    model = Net(downsample_method='conv', upsample_method='conv')
+    attention = parse_attention(args)
+    model = Net(downsample_method='conv', upsample_method='conv',
+                target_resolution=(256*args.dataset_resample, 256*args.dataset_resample),
+                attention=attention, activation=get_activation(args))
     if len(args.load_model_state) > 0:
         model_path = os.path.join(args.model_path, args.load_model_state)
         if os.path.exists(model_path):
@@ -445,7 +466,7 @@ def main(custom_args=None):
     else:
         logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), Decay {}".format(args.lr, args.beta1, args.beta2, args.weight_decay))
         optimizer = optim.Adam(model.parameters(), lr=args.lr, betas=(args.beta1, args.beta2), weight_decay=args.weight_decay)
-    criterion = ModelLoss(device=device, value_weight=0.7, edge_weight=0.3)
+    criterion = ModelLoss(device=device, value_weight=args.loss_val_weight, edge_weight=args.loss_edge_weight)
     logging.info("Model loss using value weight {} and edge weight {}".format(criterion.value_weight, criterion.edge_weight))
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
@@ -454,6 +475,34 @@ def main(custom_args=None):
         torch.save(model.state_dict(), "./{}/model_state_{}.pth".format(args.model_path, epoch))
 
 
+def parse_attention(args):
+    attention = {}
+    if args.attention is not None:
+        if len(args.attention) % 2 == 0:
+            for i in range(0, len(args.attention), 2):
+                code = args.attention[i]
+                if code not in ["e1", "e2", "e3", "e4", "e5", "d1", "d2", "d3", "d4", "d5"]:
+                    logging.warning("Unknown attention layer/block code '" + code + "'")
+                try:
+                    kernel = int(args.attention[i + 1])
+                    attention[code] = kernel
+                except ValueError:
+                    logging.error("Error parsing attenuation kernel '" + args.attention[i + 1] + "'")
+        else:
+            logging.error("Odd number of attention parameters. Ignoring attention configuration.")
+    if len(attention) > 0:
+        logging.info("Model self attention configuration: {}".format(attention))
+    return attention
+
+
+def get_activation(args):
+    if args.leaky_relu is not None:
+        logging.info("Using LeakyReLU activation with neg slope {}".format(args.leaky_relu))
+        return nn.LeakyReLU(negative_slope=args.leaky_relu, inplace=True)
+    logging.info("Using ReLU activation")
+    return nn.ReLU(inplace=True)
+
+
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='%(message)s')
+    logging.basicConfig(level=logging.INFO, format='[%(threadName)s] %(message)s')
     main()

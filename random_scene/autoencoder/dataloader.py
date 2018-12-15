@@ -136,7 +136,6 @@ class NormalizeImages(object):
         Returns:
             Tensor: Normalized Tensor image.
         """
-        # print(str(dt.now()) + " Normalizing " + sample['generated_name'])
         generated_image = sample['generated']
         left_image, right_image = sample['left'], sample['right']
 
@@ -190,7 +189,6 @@ class RandomSceneDataset(Dataset):
                 continue
             position = np.array([float(fg.group(3)), float(fg.group(4)), float(fg.group(5))], dtype=np.float32)
             self.scene_data.append((f, left_name, right_name, position))
-        logging.info("Done.")
         self.transform = transform
 
     def __len__(self):
