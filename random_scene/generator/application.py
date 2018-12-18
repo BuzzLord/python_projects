@@ -11,7 +11,7 @@ class Application:
 
     def __init__(self, seed=1234):
         self.window_name = b'Application'
-        self.window_size = (256, 256)
+        self.window_size = (128, 128)
         self.camera_yaw = 180.0
         self.camera_pitch = 0.0
         self.camera_position = np.array([0.0, 1.5, 0.0, 1.], dtype='float32')
@@ -21,7 +21,7 @@ class Application:
 
         self.save_screenshot = False
         self.generation_mode = False
-        self.generation_count = 200
+        self.generation_count = 3000
 
         self.seeds = [seed]
         self.scene = RandomScene(seed)
@@ -46,7 +46,7 @@ class Application:
 
     def initialize(self, args=[]):
         glutInit(args)
-        glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGB | GLUT_DEPTH)
+        glutInitDisplayMode(GLUT_DOUBLE | GLUT_RGBA | GLUT_DEPTH)
         glutInitWindowSize(self.window_size[0], self.window_size[1])
         glutCreateWindow(self.window_name)
         glutDisplayFunc(self.__render_loop)
@@ -72,6 +72,8 @@ class Application:
         self.__setup_render_textures()
 
     def __generate_next_scene(self, seed):
+        while seed in self.seeds:
+            seed = np.random.randint(99,999999)
         self.seeds.append(seed)
 
         print(str(dt.now()) + " New scene")
@@ -117,12 +119,13 @@ class Application:
                                   depth=DepthBuffer(cubemap_size),
                                   rotation=rotx(-90.0))
 
-        self.warp_tex = TextureBuffer(True, (256, 256), None)
+        self.warp_tex = TextureBuffer(True, (128, 128), None)
         self.warp_dep = DepthBuffer(self.warp_tex.get_size())
 
         self.warp_shader = ShaderFill(basic_vertex_shader_src, warp_frag_shader_src)
         for cubemap in self.cubemap:
             self.warp_shader.add_texture_buffer(cubemap.tex)
+            self.warp_shader.add_texture_buffer(cubemap.depth)
 
         self.screen_space_quad = Model(pos=np.array([0.0, 0.0, 0.0], dtype=np.float32), shader=self.warp_shader)
         self.screen_space_quad.add_oriented_quad((1.0,1.0,0.5),(0.0,0.0,0.5))
@@ -296,19 +299,23 @@ class Application:
 
     def __save_screenshot(self, camera_offset, eye_offset=1.0, filename_tag="x"):
         self.__render_warped_view(camera_offset)
-        glBindFramebuffer(GL_FRAMEBUFFER, 0)
-        glViewport(0, 0, self.window_size[0], self.window_size[1])
-        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        self.screen_space_quad.render(self.ssq_view, self.ssq_proj)
 
-        glReadBuffer(GL_BACK)
+        self.warp_tex.set_render_surface()
+        glViewport(0, 0, self.window_size[0], self.window_size[1])
+        glReadBuffer(GL_COLOR_ATTACHMENT0)
         data = glReadPixels(0, 0, self.window_size[0], self.window_size[1], GL_RGBA, GL_UNSIGNED_BYTE)
+        self.warp_tex.unset_render_surface()
+
         image = Image.frombytes("RGBA", self.window_size, data)
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
-        version = "1"
 
-        save_path = "test_256"
-        filename = "ss" + version + "_{:06d}".format(self.seeds[-1]) + filename_tag + "_{:.2f}_{:.2f}_{:.2f}.png".format(camera_offset[0]/eye_offset,camera_offset[1]/eye_offset,camera_offset[2]/eye_offset)
+        version = "2"
+
+        save_path = "depth_screens_128"
+        filename = "ss" + version + "_{:06d}".format(self.seeds[-1]) + filename_tag \
+                   + "_{:.2f}_{:.2f}_{:.2f}.png".format(camera_offset[0]/eye_offset,
+                                                        camera_offset[1]/eye_offset,
+                                                        camera_offset[2]/eye_offset)
         file_path = os.path.join(save_path, filename)
         image.save(file_path, 'png')
 
@@ -316,9 +323,9 @@ class Application:
     def __generate_random_positions(num):
         eye_offset = np.random.uniform(0.015, 0.04)
         positions = np.array([[eye_offset,0.0,0.0,0.0],[-eye_offset,0.0,0.0,0.0]], dtype=np.float32)
-        x_bound = 16.0 * eye_offset
-        y_bound = 12.0 * eye_offset
-        z_bound = 12.0 * eye_offset
+        x_bound = 4.0 * eye_offset
+        y_bound = 3.0 * eye_offset
+        z_bound = 3.0 * eye_offset
         bounds_power = 2.0
 
         x_range = np.linspace(0.0, 1.0, num=num + 1)
@@ -413,7 +420,12 @@ if __name__ == "__main__":
     #app = Application(seed=5461)
     # app = Application(seed=87753) # screens_256
     # app = Application(seed=4268) # screens_256 (x 100)
-    app = Application(seed=9268)
+    # app = Application(seed=9268) # test_256
+    # app = Application(seed=24609) # depth_test_256 (200)
+    # app = Application(seed=56209)  # depth_screens_256 (355)
+    # app = Application(seed=874623)  # depth_screens_256 (91)
+    # app = Application(seed=156874)  # depth_screens_256 (1554)
+    app = Application(seed=262487)  # depth_screens_128 (3000)
     app.initialize()
     app.start()
 

@@ -6,10 +6,12 @@ from OpenGL.GL.ARB.depth_buffer_float import GL_DEPTH_COMPONENT32F
 from generator.gl_math import *
 
 active_texture = { 0: GL_TEXTURE0, 1: GL_TEXTURE1, 2: GL_TEXTURE2, 3: GL_TEXTURE3,
-                   4: GL_TEXTURE4, 5: GL_TEXTURE5, 6: GL_TEXTURE6, 7: GL_TEXTURE7 }
+                   4: GL_TEXTURE4, 5: GL_TEXTURE5, 6: GL_TEXTURE6, 7: GL_TEXTURE7,
+                   8: GL_TEXTURE8, 9: GL_TEXTURE9, 10: GL_TEXTURE10, 11: GL_TEXTURE11}
 
 default_texnames = { 0: "Texture0", 1: "Texture1", 2: "Texture2", 3: "Texture3",
-                     4: "Texture4", 5: "Texture5", 6: "Texture6", 7: "Texture7" }
+                     4: "Texture4", 5: "Texture5", 6: "Texture6", 7: "Texture7",
+                     8: "Texture8", 9: "Texture9", 10: "Texture10", 11: "Texture11"}
 
 Color = namedtuple('Color', ['r','g','b','a'])
 
@@ -100,11 +102,16 @@ colormod_fragment_shader_src = """
 
 warp_frag_shader_src = """
             #version 150
-            uniform sampler2D Texture0;
-            uniform sampler2D Texture1;
-            uniform sampler2D Texture2;
-            uniform sampler2D Texture3;
-            uniform sampler2D Texture4;
+            uniform sampler2D Texture0;  // color 0
+            uniform sampler2D Texture1;  // depth 0
+            uniform sampler2D Texture2;  // color 1
+            uniform sampler2D Texture3;  // depth 1
+            uniform sampler2D Texture4;  // color 2
+            uniform sampler2D Texture5;  // depth 2
+            uniform sampler2D Texture6;  // color 3
+            uniform sampler2D Texture7;  // depth 3
+            uniform sampler2D Texture8;  // color 4
+            uniform sampler2D Texture9;  // depth 4
             in      vec4      oColor;
             in      vec2      oTexCoord;
             in      vec3      oNormal;
@@ -139,19 +146,41 @@ warp_frag_shader_src = """
                 float faceIndex;
                 vec2 uv = sampleCube(v, faceIndex);
                 if (faceIndex == 0.0) {
-                    c = texture2D(Texture2, uv);
-                } else if (faceIndex == 1.0) {
-                    c = texture2D(Texture1, uv);
-                } else if (faceIndex == 2.0) {
                     c = texture2D(Texture4, uv);
+                } else if (faceIndex == 1.0) {
+                    c = texture2D(Texture2, uv);
+                } else if (faceIndex == 2.0) {
+                    c = texture2D(Texture8, uv);
                 } else if (faceIndex == 3.0) {
-                    c = texture2D(Texture3, uv);
+                    c = texture2D(Texture6, uv);
                 } else if (faceIndex == 4.0) {
                     c = texture2D(Texture0, uv);
                 } else {
                     c = vec4(0.0);
                 }
                 return c;
+            }
+            vec4 sampleCubeDepth(vec3 v) {
+                vec4 c;
+                float faceIndex;
+                vec2 uv = sampleCube(v, faceIndex);
+                if (faceIndex == 0.0) {
+                    c = texture2D(Texture5, uv);
+                } else if (faceIndex == 1.0) {
+                    c = texture2D(Texture3, uv);
+                } else if (faceIndex == 2.0) {
+                    c = texture2D(Texture9, uv);
+                } else if (faceIndex == 3.0) {
+                    c = texture2D(Texture7, uv);
+                } else if (faceIndex == 4.0) {
+                    c = texture2D(Texture1, uv);
+                } else {
+                    c = vec4(0.0);
+                }
+                // Adjust depth based on UV from cube
+                vec2 d =  2.0 * abs(vec2(0.5) - uv);
+                float scale = 1.0 / sqrt(1.0 + d.s*d.s + d.t*d.t);
+                return pow(c, vec4(scale));
             }
             vec4 sampleFivePoints(vec2 TexCoord) {
                 vec4 AccColor = vec4(0.0);
@@ -163,6 +192,9 @@ warp_frag_shader_src = """
                 AccColor += 0.15*sampleCubeColor(toSphere(TexCoord+vec2(-SubStep,SubStep)));
                 AccColor += 0.15*sampleCubeColor(toSphere(TexCoord+vec2(-SubStep,-SubStep)));
                 return AccColor;
+            }
+            vec4 sampleDepth(vec2 TexCoord) {
+                return sampleCubeDepth(toSphere(TexCoord));
             }
             vec4 sampleNinePointsIrregular(vec2 TexCoord) {
                 vec4 AccColor = vec4(0.0);
@@ -195,7 +227,9 @@ warp_frag_shader_src = """
                 return AccColor;
             }
             void main() {
-                FragColor = sampleFivePoints(oTexCoord);
+                vec4 color = sampleFivePoints(oTexCoord);
+                vec4 depth = pow(sampleDepth(oTexCoord), vec4(8.0)); 
+                FragColor = vec4(color.rgb, depth.r);
             }"""
 
 

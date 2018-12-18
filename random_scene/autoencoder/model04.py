@@ -215,55 +215,67 @@ class Net(nn.Module):
             nn.Conv2d(12, 32, kernel_size=5, stride=1, padding=2, bias=False),
             nn.BatchNorm2d(32),
             activation,
+            ConvBlock(32, 32),
             ConvBlock(32, 32, attention_kernel=attention['e1'] if 'e1' in attention else None)
         )  # b, 32, 256, 256
         self.encoder_block2 = nn.Sequential(
             ConvBlock(32, 43, downsample_method=downsample_method),
+            ConvBlock(43, 43),
             ConvBlock(43, 43, attention_kernel=attention['e2'] if 'e2' in attention else None)
         )  # b, 43, 128, 128
         self.encoder_block3 = nn.Sequential(
             ConvBlock(43, 57, downsample_method=downsample_method),
+            ConvBlock(57, 57),
             ConvBlock(57, 57, attention_kernel=attention['e3'] if 'e3' in attention else None)
         )  # b, 57, 64, 64
         self.encoder_block4 = nn.Sequential(
             ConvBlock(57, 76, downsample_method=downsample_method),
+            ConvBlock(76, 76),
             ConvBlock(76, 76, attention_kernel=attention['e4'] if 'e4' in attention else None)
         )  # b, 76, 32, 32
         self.encoder_block5 = nn.Sequential(
             ConvBlock(76, 101, downsample_method=downsample_method),
+            ConvBlock(101, 101),
             ConvBlock(101, 101, attention_kernel=attention['e5'] if 'e5' in attention else None)
         )  # b, 101, 16, 16
         self.encoder_block6 = nn.Sequential(
             ConvBlock(101, 135, downsample_method=downsample_method),
+            ConvBlock(135, 135),
             ConvBlock(135, 135)
         )  # b, 135, 8, 8
 
         # Input: b, 135, 8, 8
         self.decoder_block1 = nn.Sequential(
             ConvTransposeBlock(135, 101, upsample_method=upsample_method),
-            ConvTransposeBlock(101, 101, attention_kernel=attention['d1'] if 'd1' in attention else None)
+            ConvTransposeBlock(101, 101),
+            ConvTransposeBlock(101, 101, attention_kernel=1)  # Self Attention here seems to help
         )  # b, 101, 16, 16
         self.decoder_block2 = nn.Sequential(
             ConvTransposeBlock(101 * 2, 76, upsample_method=upsample_method),
+            ConvTransposeBlock(76, 76),
             ConvTransposeBlock(76, 76, attention_kernel=attention['d2'] if 'd2' in attention else None)
         )  # b, 76, 32, 32
         self.decoder_block3 = nn.Sequential(
             ConvTransposeBlock(76 * 2, 57, upsample_method=upsample_method),
+            ConvTransposeBlock(57, 57),
             ConvTransposeBlock(57, 57, attention_kernel=attention['d3'] if 'd3' in attention else None)
         )  # b, 57, 64, 64
         self.decoder_block4 = nn.Sequential(
             ConvTransposeBlock(57 * 2, 43, upsample_method=upsample_method),
+            ConvTransposeBlock(43, 43),
             ConvTransposeBlock(43, 43, attention_kernel=attention['d4'] if 'd4' in attention else None)
         )  # b, 43, 128, 128
         self.decoder_block5 = nn.Sequential(
             ConvTransposeBlock(43 * 2, 32, upsample_method=upsample_method),
+            ConvTransposeBlock(32, 32),
             ConvTransposeBlock(32, 32, attention_kernel=attention['d5'] if 'd5' in attention else None)
         )  # b, 32, 256, 256
         self.decoder_block6 = nn.Sequential(
             ConvTransposeBlock(32 * 2, 32),
-            nn.ConvTranspose2d(32, 3, kernel_size=3, stride=1, padding=1, bias=False),
+            ConvTransposeBlock(32, 32),
+            nn.ConvTranspose2d(32, 4, kernel_size=3, stride=1, padding=1, bias=False),
             nn.Tanh()
-        )  # b, 3, 256, 256
+        )  # b, 4, 256, 256
 
         # Initialize weights
         for m in self.modules():
@@ -316,7 +328,7 @@ class ModelLoss(nn.Module):
                                           [-1 / 8,  8 / 8, -1 / 8],
                                           [-1 / 8, -1 / 8, -1 / 8]]]]),
                      requires_grad=False)
-        return torch.cat((f, f, f), dim=1)
+        return torch.cat((f, f, f, f), dim=1)
 
     def forward(self, input, target, reduction='mean'):
         value_l1_loss = F.l1_loss(input, target, reduction=reduction)
@@ -330,7 +342,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
     model.train()
     for batch_idx, data in enumerate(train_loader):
         data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
-        data_actual = data['generated'].to(device)
+        data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
         position = data['position'].to(device)
         optimizer.zero_grad()
         data_output, _ = model(data_input, position)
@@ -343,10 +355,12 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 100. * batch_idx / len(train_loader), loss.item()))
 
     if epoch % 1 == 0:
-        novel_images = torch.cat((data_output.cpu().data,data_actual.cpu().data), dim=3)
+        novel_images = torch.cat((data_output.cpu().data[:,0:3,:,:],data_actual.cpu().data[:,0:3,:,:]), dim=3)
+        novel_depths = torch.cat((data_output.cpu().data[:,4,:,:],data_actual.cpu().data[:,4,:,:]), dim=3)
+        novel_depths_rgb = torch.cat((novel_depths,novel_depths,novel_depths), dim=1)
         input_data = data_input.cpu().data
         eye_images = torch.cat((input_data[:,0:3,:,:],input_data[:,3:6,:,:]), dim=3)
-        images = torch.cat((novel_images,eye_images), dim=2)
+        images = torch.cat((novel_images,novel_depths_rgb,eye_images), dim=2)
         gen_pic = ((images * 0.5) + 0.5).clamp(0,1)
         save_image(gen_pic, './{}/image_{}.png'.format(args.model_path, epoch), nrow=4)
 
@@ -357,7 +371,7 @@ def test(args, model, device, test_loader, criterion):
     with torch.no_grad():
         for data in test_loader:
             data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
-            data_actual = data['generated'].to(device)
+            data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
             position = data['position'].to(device)
             data_output, _ = model(data_input, position)
             test_loss += criterion(data_output, data_actual).item() * args.test_batch_size
@@ -401,10 +415,8 @@ def main(custom_args=None):
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
                         help='filename to log output to')
-    parser.add_argument('--dataset-resample', type=float, default=0.5, metavar='R',
-                        help='resample/resize the dataset images (default 0.5)')
-    parser.add_argument('--dataset-subsample', type=float, default=0.5, metavar='S',
-                        help='subsample the dataset images to improve training (default 0.5)')
+    parser.add_argument('--dataset-resample', type=float, default=1.0, metavar='S',
+                        help='resample/resize the dataset images (default 1.0)')
     parser.add_argument('--loss-val-weight', type=float, default=0.75, metavar='V',
                         help='model loss value weight (default 0.75)')
     parser.add_argument('--loss-edge-weight', type=float, default=0.25, metavar='E',
@@ -435,22 +447,34 @@ def main(custom_args=None):
 
     kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
 
-    logging.info("Building dataset with resample rate {} and subsample rate {}".format(args.dataset_resample, args.dataset_subsample))
-    dataset_transforms = transforms.Compose([dl.ResampleImages(args.dataset_resample),
-                                             dl.SubsampleImages(args.dataset_subsample),
-                                             dl.ToTensor(),
-                                             dl.NormalizeImages(
-                                                 mean=[0.5, 0.5, 0.5],
-                                                 std=[0.5, 0.5, 0.5])
-                                             ])
-    train_set = dl.RandomSceneDataset('../screens_256', transform=dataset_transforms)
-    test_set = dl.RandomSceneDataset('../test_256', transform=dataset_transforms)
+    logging.info("Building dataset with resample rate {}".format(args.dataset_resample))
+    # train_set = dl.RandomSceneDataset('../screens2_256', depth=True, reverse=True, transform=dataset_transforms)
+    train_set = dl.RandomSceneDataset('../screens2_128', depth=True, reverse=True, transform=transforms.Compose(
+        [dl.ResampleImages(args.dataset_resample),
+         dl.ToTensor(),
+         dl.NormalizeImages(
+             mean=[0.5, 0.5, 0.5],
+             std=[0.5, 0.5, 0.5]),
+         dl.NormalizeDepth(
+             mean=[0.5, 0.5, 0.5],
+             std=[0.5, 0.5, 0.5])
+         ]))
+    test_set = dl.RandomSceneDataset('../test2_256', depth=True, reverse=False, transform=transforms.Compose(
+        [dl.ResampleImages(args.dataset_resample*0.5),
+         dl.ToTensor(),
+         dl.NormalizeImages(
+             mean=[0.5, 0.5, 0.5],
+             std=[0.5, 0.5, 0.5]),
+         dl.NormalizeDepth(
+             mean=[0.5, 0.5, 0.5],
+             std=[0.5, 0.5, 0.5])
+         ]))
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
     attention = parse_attention(args)
     model = Net(downsample_method='conv', upsample_method='conv',
-                target_resolution=(256*args.dataset_resample, 256*args.dataset_resample),
+                target_resolution=(128*args.dataset_resample, 128*args.dataset_resample),
                 attention=attention, activation=get_activation(args))
     if len(args.load_model_state) > 0:
         model_path = os.path.join(args.model_path, args.load_model_state)
