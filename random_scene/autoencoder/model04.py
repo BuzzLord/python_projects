@@ -338,7 +338,33 @@ class ModelLoss(nn.Module):
         return value_l1_loss * self.value_weight + edge_l1_loss * self.edge_weight
 
 
-def train(args, model, device, train_loader, criterion, optimizer, epoch):
+class ImageSaver:
+    def __init__(self, mean, std, nrows=4):
+        self.mean = mean
+        self.std = std
+        self.nrows = nrows
+
+    def save(self, output, actual, input, path):
+        for t, m, s in zip(output.transpose_(dim0=0, dim1=1), self.mean, self.std):
+            t.mul_(s).add_(m)
+        output.transpose_(dim0=0, dim1=1)
+        for t, m, s in zip(actual.transpose_(dim0=0, dim1=1), self.mean, self.std):
+            t.mul_(s).add_(m)
+        actual.transpose_(dim0=0, dim1=1)
+        for t, m, s in zip(input.transpose_(dim0=0, dim1=1), self.mean[0:3] + self.mean[0:3], self.std[0:3] + self.std[0:3]):
+            t.mul_(s).add_(m)
+        input.transpose_(dim0=0, dim1=1)
+
+        novel_images = torch.cat((output[:, 0:3, :, :], actual[:, 0:3, :, :]), dim=3)
+        novel_depths = torch.cat((output[:, 3, :, :], actual[:, 3, :, :]), dim=2).unsqueeze(dim=1)
+        novel_depths_rgb = torch.cat((novel_depths, novel_depths, novel_depths), dim=1)
+
+        eye_images = torch.cat((input[:, 0:3, :, :], input[:, 3:6, :, :]), dim=3)
+        images = torch.cat((novel_images, novel_depths_rgb, eye_images), dim=2).clamp(0, 1)
+        save_image(images, path, nrow=self.nrows)
+
+
+def train(args, model, device, train_loader, criterion, optimizer, epoch, img_saver):
     model.train()
     for batch_idx, data in enumerate(train_loader):
         data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
@@ -355,14 +381,8 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 100. * batch_idx / len(train_loader), loss.item()))
 
     if epoch % 1 == 0:
-        novel_images = torch.cat((data_output.cpu().data[:,0:3,:,:],data_actual.cpu().data[:,0:3,:,:]), dim=3)
-        novel_depths = torch.cat((data_output.cpu().data[:,4,:,:],data_actual.cpu().data[:,4,:,:]), dim=3)
-        novel_depths_rgb = torch.cat((novel_depths,novel_depths,novel_depths), dim=1)
-        input_data = data_input.cpu().data
-        eye_images = torch.cat((input_data[:,0:3,:,:],input_data[:,3:6,:,:]), dim=3)
-        images = torch.cat((novel_images,novel_depths_rgb,eye_images), dim=2)
-        gen_pic = ((images * 0.5) + 0.5).clamp(0,1)
-        save_image(gen_pic, './{}/image_{}.png'.format(args.model_path, epoch), nrow=4)
+        img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
+                     './{}/image_{}.png'.format(args.model_path, epoch))
 
 
 def test(args, model, device, test_loader, criterion):
@@ -377,7 +397,7 @@ def test(args, model, device, test_loader, criterion):
             test_loss += criterion(data_output, data_actual).item() * args.test_batch_size
 
     test_loss /= len(test_loader.dataset)
-    logging.info('\nTest set: Average loss: {:.6f}\n'.format(test_loss))
+    logging.info('Test set: Average loss: {:.6f}\n'.format(test_loss))
 
 
 def main(custom_args=None):
@@ -453,21 +473,21 @@ def main(custom_args=None):
         [dl.ResampleImages(args.dataset_resample),
          dl.ToTensor(),
          dl.NormalizeImages(
-             mean=[0.5, 0.5, 0.5],
-             std=[0.5, 0.5, 0.5]),
+             mean=[0.334, 0.325, 0.320],
+             std=[0.666, 0.675, 0.680]),
          dl.NormalizeDepth(
-             mean=[0.5, 0.5, 0.5],
-             std=[0.5, 0.5, 0.5])
+             mean=[0.683],
+             std=[0.683])
          ]))
     test_set = dl.RandomSceneDataset('../test2_256', depth=True, reverse=False, transform=transforms.Compose(
         [dl.ResampleImages(args.dataset_resample*0.5),
          dl.ToTensor(),
          dl.NormalizeImages(
-             mean=[0.5, 0.5, 0.5],
-             std=[0.5, 0.5, 0.5]),
+             mean=[0.334, 0.325, 0.320],
+             std=[0.666, 0.675, 0.680]),
          dl.NormalizeDepth(
-             mean=[0.5, 0.5, 0.5],
-             std=[0.5, 0.5, 0.5])
+             mean=[0.683],
+             std=[0.683])
          ]))
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, **kwargs)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=True, **kwargs)
@@ -493,8 +513,10 @@ def main(custom_args=None):
     criterion = ModelLoss(device=device, value_weight=args.loss_val_weight, edge_weight=args.loss_edge_weight)
     logging.info("Model loss using value weight {} and edge weight {}".format(criterion.value_weight, criterion.edge_weight))
 
+    img_saver = ImageSaver(mean=[0.334, 0.325, 0.320, 0.683], std=[0.666, 0.675, 0.680, 0.683], nrows=8)
+
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
-        train(args, model, device, train_loader, criterion, optimizer, epoch)
+        train(args, model, device, train_loader, criterion, optimizer, epoch, img_saver)
         test(args, model, device, test_loader, criterion)
         torch.save(model.state_dict(), "./{}/model_state_{}.pth".format(args.model_path, epoch))
 

@@ -307,9 +307,9 @@ class RandomSceneDataset(Dataset):
         left_image = np.clip(scale * np.array(cv2.imread(left_name, cv2.IMREAD_UNCHANGED), dtype=np.float32), 0.0, 1.0)
         right_image = np.clip(scale * np.array(cv2.imread(right_name, cv2.IMREAD_UNCHANGED), dtype=np.float32), 0.0, 1.0)
         if is_reversed:
-            generated_image = cv2.flip(generated_image, 0)
-            temp_image = cv2.flip(left_image, 0)
-            left_image = cv2.flip(right_image, 0)
+            generated_image = cv2.flip(generated_image, 1)
+            temp_image = cv2.flip(left_image, 1)
+            left_image = cv2.flip(right_image, 1)
             right_image = temp_image
             position[0] = -position[0]
 
