@@ -9,6 +9,7 @@ from torchvision import transforms, utils
 import cv2
 import matplotlib.pyplot as plt
 import logging
+from projection import Projection
 
 
 class ExpandPosition(object):
@@ -20,23 +21,9 @@ class ExpandPosition(object):
         expanded_position = position * np.ones((generated_image.shape[0], generated_image.shape[1], position.size),
                                                dtype=np.float32)
 
-        resampled = {
-            'generated_name': sample['generated_name'],
-            'generated': sample['generated'],
-            'left_name': sample['left_name'],
-            'left': sample['left'],
-            'right_name': sample['right_name'],
-            'right': sample['right'],
-            'position': sample['position'],
-            'expanded_position': expanded_position
-        }
+        sample['expanded_position'] = expanded_position
 
-        if 'generated_depth' in sample:
-            resampled['generated_depth'] = sample['generated_depth']
-            resampled['left_depth'] = sample['left_depth']
-            resampled['right_depth'] = sample['right_depth']
-
-        return resampled
+        return sample
 
 
 class SubsampleImages(object):
@@ -51,29 +38,20 @@ class SubsampleImages(object):
         def rescale(img):
             orig_dim = (img.shape[1], img.shape[0])
             scale_dim = (int(orig_dim[0] * self.scale), int(orig_dim[1] * self.scale))
-            if scale_dim[0] == orig_dim[0] and scale_dim[1] == orig_dim[1]:
+            if scale_dim == orig_dim:
                 return img
             return cv2.resize(
                 cv2.resize(img, scale_dim, interpolation=self.inter_down),
                 orig_dim, interpolation=self.inter_up)
 
-        resampled = {
-                'generated_name': sample['generated_name'],
-                'generated': rescale(sample['generated']),
-                'left_name': sample['left_name'],
-                'left': rescale(sample['left']),
-                'right_name': sample['right_name'],
-                'right': rescale(sample['right']),
-                'position': sample['position']
-            }
-        if 'expanded_position' in sample:
-            resampled['expanded_position'] = sample['expanded_position']
+        sample['generated'] = rescale(sample['generated'])
+        sample['left'] = rescale(sample['left'])
+        sample['right'] = rescale(sample['right'])
 
         if 'generated_depth' in sample:
-            resampled['generated_depth'] = rescale(sample['generated_depth'])
-            resampled['left_depth'] = rescale(sample['left_depth'])
-            resampled['right_depth'] = rescale(sample['right_depth'])
-        return resampled
+            sample['generated_depth'] = rescale(sample['generated_depth'])
+
+        return sample
 
 
 class ResampleImages(object):
@@ -86,26 +64,95 @@ class ResampleImages(object):
     def __call__(self, sample):
         def rescale(img):
             scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+            if scale_dim == (img.shape[1], img.shape[0]):
+                return img
             return cv2.resize(img, scale_dim, interpolation=self.interpolation)
 
-        resampled = {
-                'generated_name': sample['generated_name'],
-                'generated': rescale(sample['generated']),
-                'left_name': sample['left_name'],
-                'left': rescale(sample['left']),
-                'right_name': sample['right_name'],
-                'right': rescale(sample['right']),
-                'position': sample['position']
-            }
-        if 'expanded_position' in sample:
-            resampled['expanded_position'] = sample['expanded_position']
+        sample['generated'] = rescale(sample['generated'])
+        sample['left'] = rescale(sample['left'])
+        sample['right'] = rescale(sample['right'])
 
         if 'generated_depth' in sample:
-            resampled['generated_depth'] = rescale(sample['generated_depth'])
-            resampled['left_depth'] = rescale(sample['left_depth'])
-            resampled['right_depth'] = rescale(sample['right_depth'])
+            sample['generated_depth'] = rescale(sample['generated_depth'])
 
-        return resampled
+        return sample
+
+
+class ResampleInputImages(object):
+    """Downsample or upsample the input images in the sample by scale."""
+
+    def __init__(self, scale, interpolation=cv2.INTER_AREA):
+        self.scale = scale
+        self.interpolation = interpolation
+
+    def __call__(self, sample):
+        def rescale(img):
+            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+            if scale_dim == (img.shape[1], img.shape[0]):
+                return img
+            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+
+        sample['left'] = rescale(sample['left'])
+        sample['right'] = rescale(sample['right'])
+
+        return sample
+
+
+class ResampleGeneratedImages(object):
+    """Downsample or upsample the images in the sample by scale."""
+
+    def __init__(self, scale, interpolation=cv2.INTER_AREA):
+        self.scale = scale
+        self.interpolation = interpolation
+
+    def __call__(self, sample):
+        def rescale(img):
+            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+            if scale_dim == (img.shape[1], img.shape[0]):
+                return img
+            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+
+        sample['generated'] = rescale(sample['generated'])
+
+        return sample
+
+
+class ResampleGeneratedDepth(object):
+    """Downsample or upsample the images in the sample by scale."""
+
+    def __init__(self, scale, interpolation=cv2.INTER_AREA):
+        self.scale = scale
+        self.interpolation = interpolation
+
+    def __call__(self, sample):
+        def rescale(img):
+            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+            if scale_dim == (img.shape[1], img.shape[0]):
+                return img
+            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+
+        if 'generated_depth' in sample:
+            sample['generated_depth'] = rescale(sample['generated_depth'])
+
+        return sample
+
+
+class GenerateReprojectedImages(object):
+    def __init__(self, name, scale, xrot=0.0, yrot=0.0, fov=90.0, aspect=1.0):
+        self.name = "reproj_" + name
+        self.scale = scale
+        self.proj = Projection(xrot=xrot, yrot=yrot, fov=fov, aspect=aspect)
+
+    def __call__(self, sample):
+        input_dim = (sample['generated'].shape[1], sample['generated'].shape[0])
+        output_dim = (input_dim[0] * self.scale, input_dim[1] * self.scale)
+        phi, theta = self.proj.generate_map(output_dim=output_dim, input_dim=input_dim)
+        interpolation = cv2.INTER_AREA
+        remap = cv2.remap(sample['generated'], phi, theta, interpolation=interpolation, borderValue=0,
+                          borderMode=cv2.BORDER_CONSTANT)
+        sample[self.name] = remap
+
+        return sample
 
 
 class ToTensor(object):
@@ -118,24 +165,22 @@ class ToTensor(object):
         # numpy image: H x W x C
         # torch image: C X H X W
 
-        resampled = {
-            'generated_name': sample['generated_name'],
-            'generated': torch.from_numpy(sample['generated'].transpose((2, 0, 1))),
-            'left_name': sample['left_name'],
-            'left': torch.from_numpy(sample['left'].transpose((2, 0, 1))),
-            'right_name': sample['right_name'],
-            'right': torch.from_numpy(sample['right'].transpose((2, 0, 1))),
-            'position': torch.reshape(torch.from_numpy(sample['position']), (3, 1, 1))
-        }
+        sample['generated'] = torch.from_numpy(sample['generated'].transpose((2, 0, 1)))
+        sample['left'] = torch.from_numpy(sample['left'].transpose((2, 0, 1)))
+        sample['right'] = torch.from_numpy(sample['right'].transpose((2, 0, 1)))
+        sample['position'] = torch.reshape(torch.from_numpy(sample['position']), (3, 1, 1))
+
         if 'expanded_position' in sample:
-            resampled['expanded_position'] = torch.from_numpy(sample['expanded_position'].transpose((2, 0, 1)))
+            sample['expanded_position'] = torch.from_numpy(sample['expanded_position'].transpose((2, 0, 1)))
 
         if 'generated_depth' in sample:
-            resampled['generated_depth'] = torch.from_numpy(np.expand_dims(sample['generated_depth'], axis=2).transpose((2, 0, 1)))
-            resampled['left_depth'] = torch.from_numpy(np.expand_dims(sample['left_depth'], axis=2).transpose((2, 0, 1)))
-            resampled['right_depth'] = torch.from_numpy(np.expand_dims(sample['right_depth'], axis=2).transpose((2, 0, 1)))
+            sample['generated_depth'] = torch.from_numpy(np.expand_dims(sample['generated_depth'], axis=2).transpose((2, 0, 1)))
 
-        return resampled
+        for n in sample:
+            if n.startswith("reproj_"):
+                sample[n] = torch.from_numpy(sample[n].transpose((2, 0, 1)))
+
+        return sample
 
 
 class NormalizeImages(object):
@@ -172,27 +217,18 @@ class NormalizeImages(object):
             t.sub_(m).div_(s)
         # print(str(dt.now()) + " Finished " + sample['generated_name'])
 
-        resampled = {
-            'generated_name': sample['generated_name'],
-            'generated': generated_image,
-            'generated_depth': sample['generated_depth'],
-            'left_name': sample['left_name'],
-            'left': left_image,
-            'left_depth': sample['left_depth'],
-            'right_name': sample['right_name'],
-            'right': right_image,
-            'right_depth': sample['right_depth'],
-            'position': sample['position']
-        }
-        if 'expanded_position' in sample:
-            resampled['expanded_position'] = sample['expanded_position']
+        sample['generated'] = generated_image
+        sample['left'] = left_image
+        sample['right'] = right_image
 
-        if 'generated_depth' in sample:
-            resampled['generated_depth'] = sample['generated_depth']
-            resampled['left_depth'] = sample['left_depth']
-            resampled['right_depth'] = sample['right_depth']
+        for name in sample:
+            if name.startswith("reproj_"):
+                reproj = sample[name]
+                for t, m, s in zip(reproj, self.mean, self.std):
+                    t.sub_(m).div_(s)
+                sample[name] = reproj
 
-        return resampled
+        return sample
 
 
 class NormalizeDepth(object):
@@ -222,32 +258,13 @@ class NormalizeDepth(object):
             return sample
 
         generated_image_depth = sample['generated_depth']
-        left_image_depth, right_image_depth = sample['left_depth'], sample['right_depth']
 
         for t, m, s in zip(generated_image_depth, self.mean, self.std):
             t.sub_(m).div_(s)
-        for t, m, s in zip(left_image_depth, self.mean, self.std):
-            t.sub_(m).div_(s)
-        for t, m, s in zip(right_image_depth, self.mean, self.std):
-            t.sub_(m).div_(s)
-        # print(str(dt.now()) + " Finished " + sample['generated_name'])
 
-        resampled = {
-            'generated_name': sample['generated_name'],
-            'generated': sample['generated'],
-            'generated_depth': generated_image_depth,
-            'left_name': sample['left_name'],
-            'left': sample['left'],
-            'left_depth': left_image_depth,
-            'right_name': sample['right_name'],
-            'right': sample['right'],
-            'right_depth': right_image_depth,
-            'position': sample['position']
-        }
-        if 'expanded_position' in sample:
-            resampled['expanded_position'] = sample['expanded_position']
+        sample['generated_depth'] = generated_image_depth
 
-        return resampled
+        return sample
 
 
 class RandomSceneDataset(Dataset):
@@ -263,7 +280,7 @@ class RandomSceneDataset(Dataset):
         self.root_dir = root_dir
         self.scene_data = []
         self.depth = depth
-        logging.info("Checking dataset directory listing.")
+        logging.info("Checking dataset directory listing for {}".format(root_dir))
         file_list = [f for f in listdir(self.root_dir) if isfile(join(self.root_dir, f)) and f.startswith("ss") and f.endswith(".png")]
         logging.info("Found " + str(len(file_list)) + " files. Collating filenames into list.")
         for f in file_list:
@@ -313,9 +330,9 @@ class RandomSceneDataset(Dataset):
             right_image = temp_image
             position[0] = -position[0]
 
-        generated_image_color = generated_image[:, :, 0:3][:, :, ::-1]
-        left_image_color = left_image[:, :, 0:3][:, :, ::-1]
-        right_image_color = right_image[:, :, 0:3][:, :, ::-1]
+        generated_image_color = np.copy(generated_image[:, :, 0:3][:, :, ::-1])
+        left_image_color = np.copy(left_image[:, :, 0:3][:, :, ::-1])
+        right_image_color = np.copy(right_image[:, :, 0:3][:, :, ::-1])
 
         sample = {
             'generated_name': generated_name,
@@ -329,8 +346,6 @@ class RandomSceneDataset(Dataset):
 
         if self.depth:
             sample['generated_depth'] = generated_image[:, :, 3]
-            sample['left_depth'] = left_image[:, :, 3]
-            sample['right_depth'] = right_image[:, :, 3]
 
         if self.transform:
             sample = self.transform(sample)

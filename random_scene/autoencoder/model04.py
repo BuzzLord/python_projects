@@ -468,7 +468,7 @@ def main(custom_args=None):
     kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
 
     logging.info("Building dataset with resample rate {}".format(args.dataset_resample))
-    # train_set = dl.RandomSceneDataset('../screens2_256', depth=True, reverse=True, transform=dataset_transforms)
+    # train_set = dl.RandomSceneDataset('../screens2_256', depth=True, reverse=True, transform=transforms.Compose(
     train_set = dl.RandomSceneDataset('../screens2_128', depth=True, reverse=True, transform=transforms.Compose(
         [dl.ResampleImages(args.dataset_resample),
          dl.ToTensor(),
