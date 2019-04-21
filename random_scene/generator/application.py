@@ -11,7 +11,7 @@ class Application:
 
     def __init__(self, seed=1234):
         self.window_name = b'Application'
-        self.window_size = (128, 128)
+        self.window_size = (256, 256)
         self.camera_yaw = 180.0
         self.camera_pitch = 0.0
         self.camera_position = np.array([0.0, 1.5, 0.0, 1.], dtype='float32')
@@ -21,7 +21,7 @@ class Application:
 
         self.save_screenshot = False
         self.generation_mode = False
-        self.generation_count = 3000
+        self.generation_count = 1200
 
         self.seeds = [seed]
         self.scene = RandomScene(seed)
@@ -31,6 +31,7 @@ class Application:
         self.activate_next_scene = False
         self.cubemap = [None,None,None,None,None]
         self.cube_proj = perspective(90.0, 1.0, 0.1, 200.0)
+        self.cubemap_size = (1024, 1024)
 
         self.warp_tex = None
         self.warp_dep = None
@@ -102,24 +103,23 @@ class Application:
         self.activate_next_scene = False
 
     def __setup_render_textures(self):
-        cubemap_size = (1024, 1024)
-        self.cubemap[0] = Cubemap(tex=TextureBuffer(True, cubemap_size, None),
-                                  depth=DepthBuffer(cubemap_size),
+        self.cubemap[0] = Cubemap(tex=TextureBuffer(True, self.cubemap_size, None),
+                                  depth=DepthBuffer(self.cubemap_size),
                                   rotation=roty(0.0))
-        self.cubemap[1] = Cubemap(tex=TextureBuffer(True, cubemap_size, None),
-                                  depth=DepthBuffer(cubemap_size),
+        self.cubemap[1] = Cubemap(tex=TextureBuffer(True, self.cubemap_size, None),
+                                  depth=DepthBuffer(self.cubemap_size),
                                   rotation=roty(90.0))
-        self.cubemap[2] = Cubemap(tex=TextureBuffer(True, cubemap_size, None),
-                                  depth=DepthBuffer(cubemap_size),
+        self.cubemap[2] = Cubemap(tex=TextureBuffer(True, self.cubemap_size, None),
+                                  depth=DepthBuffer(self.cubemap_size),
                                   rotation=roty(-90.0))
-        self.cubemap[3] = Cubemap(tex=TextureBuffer(True, cubemap_size, None),
-                                  depth=DepthBuffer(cubemap_size),
+        self.cubemap[3] = Cubemap(tex=TextureBuffer(True, self.cubemap_size, None),
+                                  depth=DepthBuffer(self.cubemap_size),
                                   rotation=rotx(90.0))
-        self.cubemap[4] = Cubemap(tex=TextureBuffer(True, cubemap_size, None),
-                                  depth=DepthBuffer(cubemap_size),
+        self.cubemap[4] = Cubemap(tex=TextureBuffer(True, self.cubemap_size, None),
+                                  depth=DepthBuffer(self.cubemap_size),
                                   rotation=rotx(-90.0))
 
-        self.warp_tex = TextureBuffer(True, (128, 128), None)
+        self.warp_tex = TextureBuffer(True, self.window_size, None)
         self.warp_dep = DepthBuffer(self.warp_tex.get_size())
 
         self.warp_shader = ShaderFill(basic_vertex_shader_src, warp_frag_shader_src)
@@ -199,7 +199,7 @@ class Application:
                     tag = "l"
                 else:
                     tag = "g"
-                self.__save_screenshot(pos, eye_offset=offset, filename_tag=tag)
+                self.__save_screenshot(pos, eye_offset=offset, filename_tag=tag, save_cubemap=True)
             print("Done")
             self.generation_count -= 1
             if self.generation_count > 0:
@@ -211,7 +211,7 @@ class Application:
 
         if self.save_screenshot:
             self.save_screenshot = False
-            self.__save_screenshot(self.camera_offset)
+            self.__save_screenshot(self.camera_offset, save_cubemap=True)
 
         if self.generate_next_scene:
             if self.return_previous_scene:
@@ -297,7 +297,12 @@ class Application:
         elif key == GLUT_KEY_DOWN:
             self.camera_pitch = max(self.camera_pitch - d, -90.0)
 
-    def __save_screenshot(self, camera_offset, eye_offset=1.0, filename_tag="x"):
+    def __save_screenshot(self, camera_offset, eye_offset=1.0, filename_tag="x", save_cubemap=False):
+
+        def get_filename(ver, seed, tag, position):
+            return "ss" + ver + "_{:06d}".format(seed) + tag + \
+                   "_{:.2f}_{:.2f}_{:.2f}.png".format(position[0], position[1], position[2])
+
         self.__render_warped_view(camera_offset)
 
         self.warp_tex.set_render_surface()
@@ -310,14 +315,32 @@ class Application:
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
 
         version = "2"
-
-        save_path = "depth_screens_128"
-        filename = "ss" + version + "_{:06d}".format(self.seeds[-1]) + filename_tag \
-                   + "_{:.2f}_{:.2f}_{:.2f}.png".format(camera_offset[0]/eye_offset,
-                                                        camera_offset[1]/eye_offset,
-                                                        camera_offset[2]/eye_offset)
+        save_path = "screens3_256"
+        if not os.path.exists(save_path):
+            os.mkdir(save_path)
+        filename = get_filename(version, self.seeds[-1], filename_tag, (camera_offset[0]/eye_offset,
+                                                                        camera_offset[1]/eye_offset,
+                                                                        camera_offset[2]/eye_offset))
         file_path = os.path.join(save_path, filename)
         image.save(file_path, 'png')
+
+        if save_cubemap:
+            for i, cubemap in enumerate(self.cubemap):
+                cubemap.tex.set_render_surface()
+                glViewport(0, 0, self.cubemap_size[0], self.cubemap_size[1])
+                glReadBuffer(GL_COLOR_ATTACHMENT0)
+                data = glReadPixels(0, 0, self.cubemap_size[0], self.cubemap_size[1], GL_RGBA, GL_UNSIGNED_BYTE)
+                cubemap.tex.unset_render_surface()
+
+                image = Image.frombytes("RGBA", self.cubemap_size, data)
+                image.thumbnail(self.window_size)
+                image = image.transpose(Image.FLIP_TOP_BOTTOM)
+                cubemap_filename = get_filename(version, self.seeds[-1], "c{}".format(i),
+                                                (camera_offset[0] / eye_offset,
+                                                 camera_offset[1] / eye_offset,
+                                                 camera_offset[2] / eye_offset))
+                file_path = os.path.join(save_path, cubemap_filename)
+                image.save(file_path, 'png')
 
     @staticmethod
     def __generate_random_positions(num):
@@ -421,11 +444,14 @@ if __name__ == "__main__":
     # app = Application(seed=87753) # screens_256
     # app = Application(seed=4268) # screens_256 (x 100)
     # app = Application(seed=9268) # test_256
-    # app = Application(seed=24609) # depth_test_256 (200)
-    # app = Application(seed=56209)  # depth_screens_256 (355)
-    # app = Application(seed=874623)  # depth_screens_256 (91)
-    # app = Application(seed=156874)  # depth_screens_256 (1554)
-    app = Application(seed=262487)  # depth_screens_128 (3000)
+    # app = Application(seed=24609) # test2_256 (200)
+    # app = Application(seed=56209)  # screens2_256 (355)
+    # app = Application(seed=874623)  # screens2_256 (91)
+    # app = Application(seed=156874)  # screens2_256 (1554)
+    # app = Application(seed=262487)  # screens2_128 (3000)
+    # app = Application(seed=407115)  # test2_512 (bad)
+    # app = Application(seed=769250)  # test2_512 (120)
+    app = Application(seed=335248)  # test2_512 (1200)
     app.initialize()
     app.start()
 

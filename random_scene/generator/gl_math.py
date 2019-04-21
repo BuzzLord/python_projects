@@ -5,11 +5,14 @@ X_AXIS = np.array([1., 0., 0.], dtype=np.float32)
 Y_AXIS = np.array([0., 1., 0.], dtype=np.float32)
 Z_AXIS = np.array([0., 0., 1.], dtype=np.float32)
 
+
 def transform(m, v):
     return np.asarray(m * np.asmatrix(v).T)[:,0]
 
+
 def magnitude(v):
     return np.linalg.norm(v)
+
 
 def normalize(v):
     m = magnitude(v)
@@ -17,8 +20,10 @@ def normalize(v):
         return v
     return v / m
 
+
 def invert(m):
     return np.linalg.inv(m)
+
 
 def ortho(l, r, b, t, n, f):
     dx = r - l
@@ -136,7 +141,6 @@ def test():
     foo = np.asarray((0.0,0.0,0.0, 1.0), dtype='float32')
     move_left = translate((1.0,0.0,2.0))
     flip_over = rotate(90, np.asarray((0.0,1.0,0.0), dtype='float32'))
-
 
     bar = transform(move_left, foo)
     bar = transform(flip_over, bar)
