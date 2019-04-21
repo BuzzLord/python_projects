@@ -18,28 +18,38 @@ import dataloader as dl
 
 
 class ModelLoss(nn.Module):
-    def __init__(self, device, value_weight=0.7, edge_weight=0.2, remap_weight=0.1):
+    def __init__(self, device, value_edge_weight=0.7, remap_weight=0.2):
         super(ModelLoss, self).__init__()
-        self.edge_filter = ModelLoss.generate_filter().to(device)
-        self.value_weight = value_weight
-        self.edge_weight = edge_weight
+        self.edge_filter_4 = ModelLoss.generate_filter(depth=4).to(device)
+        self.edge_filter_15 = ModelLoss.generate_filter(depth=15).to(device)
+        self.value_edge_weight = value_edge_weight
         self.remap_weight = remap_weight
 
     @staticmethod
-    def generate_filter():
+    def generate_filter(depth=4):
         f = Variable(torch.FloatTensor([[[[-1 / 8, -1 / 8, -1 / 8],
                                           [-1 / 8,  8 / 8, -1 / 8],
                                           [-1 / 8, -1 / 8, -1 / 8]]]]),
-                     requires_grad=False)
-        return torch.cat((f, f, f, f), dim=1)
+                     requires_grad=False) / float(depth)
+        ft = (f,)
+        for i in range(depth-1):
+            ft = ft + (f,)
+        return torch.cat(ft, dim=1)
 
     def forward(self, input, target, remap_input, remap_target, reduction='mean'):
         value_l1_loss = F.l1_loss(input, target, reduction=reduction)
-        input_log_edges = F.conv2d(input, self.edge_filter, padding=1)
-        target_log_edges = F.conv2d(target, self.edge_filter, padding=1)
+        input_log_edges = F.conv2d(input, self.edge_filter_4, padding=1)
+        target_log_edges = F.conv2d(target, self.edge_filter_4, padding=1)
         edge_l1_loss = F.l1_loss(input_log_edges, target_log_edges, reduction=reduction)
-        remap_loss = F.l1_loss(remap_input, remap_target, reduction=reduction)
-        return value_l1_loss * self.value_weight + edge_l1_loss * self.edge_weight + remap_loss * self.remap_weight
+        primary_l1_loss = value_l1_loss * self.value_edge_weight + edge_l1_loss * (1.0 - self.value_edge_weight)
+
+        remap_value_loss = F.l1_loss(remap_input, remap_target, reduction=reduction)
+        remap_input_edges = F.conv2d(remap_input, self.edge_filter_15, padding=1)
+        remap_target_edges = F.conv2d(remap_target, self.edge_filter_15, padding=1)
+        remap_edge_loss = F.l1_loss(remap_input_edges, remap_target_edges, reduction=reduction)
+        remap_l1_loss = remap_value_loss * self.value_edge_weight + remap_edge_loss * (1.0 - self.value_edge_weight)
+
+        return primary_l1_loss * (1.0 - self.remap_weight) + remap_l1_loss * self.remap_weight
 
 
 class UpsampleInterpolate(nn.Module):
@@ -547,16 +557,16 @@ class Net(nn.Module):
         p5 = self.position_block5(p4)
         h6 = torch.cat((p5, z5, x2), dim=1)
         z6 = self.decoder_block6(h6)
+        u6 = self.decoder_upsample(z6)
 
-        r1 = self.remap_left_output(z6)
-        r2 = self.remap_right_output(z6)
-        r3 = self.remap_up_output(z6)
-        r4 = self.remap_down_output(z6)
-        r5 = self.remap_straight_output(z6)
+        r1 = self.remap_left_output(u6)
+        r2 = self.remap_right_output(u6)
+        r3 = self.remap_up_output(u6)
+        r4 = self.remap_down_output(u6)
+        r5 = self.remap_straight_output(u6)
 
         rx = torch.cat((r1, r2, r3, r4, r5), dim=1)
 
-        u6 = self.decoder_upsample(z6)
         z7 = self.decoder_block7(u6)
         out = self.decoder_output(z7)
 
@@ -600,7 +610,6 @@ class ImageSaver:
 
         eye_images = torch.cat((input[:, 0:3, :, :], input[:, 3:6, :, :]), dim=3)
         eye_images = F.interpolate(eye_images, scale_factor=self.super_res_factor, mode='bilinear', align_corners=False)
-        remap_images = F.interpolate(remap_images, scale_factor=self.super_res_factor, mode='bilinear', align_corners=False)
         images = torch.cat((novel_images, novel_depths_rgb, remap_images, eye_images), dim=2).clamp(0, 1)
         save_image(images, path, nrow=self.nrows)
 
@@ -654,7 +663,8 @@ def test(args, model, device, test_loader, criterion):
 
 def main(custom_args=None):
     # Training settings
-    parser = argparse.ArgumentParser(description='PyTorch Model 06 Experiment')
+    model_number = "06"
+    parser = argparse.ArgumentParser(description='PyTorch Model ' + model_number + ' Experiment')
     parser.add_argument('--batch-size', type=int, default=36, metavar='N',
                         help='input batch size for training (default: 36)')
     parser.add_argument('--test-batch-size', type=int, default=72, metavar='N',
@@ -677,8 +687,8 @@ def main(custom_args=None):
                         help='random seed (default: 1)')
     parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
                         help='filename to pre-trained model state to load')
-    parser.add_argument('--model-path', type=str, default="model06", metavar='PATH',
-                        help='pathname for this models output (default model06)')
+    parser.add_argument('--model-path', type=str, default="model"+model_number, metavar='PATH',
+                        help='pathname for this models output (default model'+model_number+')')
     parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
@@ -691,12 +701,10 @@ def main(custom_args=None):
                         help='testing/validation dataset path')
     parser.add_argument('--super-res-factor', type=float, default=1.0, metavar='S',
                         help='super resolution factor, > 1.0 for upscaling (default 1.0)')
-    parser.add_argument('--loss-val-weight', type=float, default=0.60, metavar='V',
-                        help='model loss value weight (default 0.60)')
-    parser.add_argument('--loss-edge-weight', type=float, default=0.25, metavar='E',
-                        help='model loss edge weight (default 0.25)')
-    parser.add_argument('--loss-remap-weight', type=float, default=0.15, metavar='R',
-                        help='model loss remap weight (default 0.15)')
+    parser.add_argument('--loss-ve-weight', type=float, default=0.75, metavar='W',
+                        help='model loss value/edge weight (default 0.75/0.25); edge weight is 1 - val_weight.')
+    parser.add_argument('--loss-remap-weight', type=float, default=0.25, metavar='R',
+                        help='model loss remap weight (default 0.25/0.75);')
     parser.add_argument('--clip-max-norm', type=float, default=1.1, metavar='C',
                         help='gradient clip max_norm (default 1.1)')
     parser.add_argument('--attention', type=str, nargs='+',
@@ -747,9 +755,9 @@ def main(custom_args=None):
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr, betas=(args.beta1, args.beta2),
                            weight_decay=args.weight_decay)
-    logging.info("Model loss using value weight {}, edge weight {}, remap weight {}".format(
-        args.loss_val_weight, args.loss_edge_weight, args.loss_remap_weight))
-    criterion = ModelLoss(device=device, value_weight=args.loss_val_weight, edge_weight=args.loss_edge_weight)
+    logging.info("Model loss using value/edge weight {}/{}, remap weight {}/{}".format(
+        args.loss_ve_weight, (1.0-args.loss_ve_weight), args.loss_remap_weight, (1.0-args.loss_remap_weight)))
+    criterion = ModelLoss(device=device, value_edge_weight=args.loss_ve_weight, remap_weight=args.loss_remap_weight)
 
     img_saver = ImageSaver(mean=dataset_mean, std=dataset_std, nrows=6, super_res_factor=args.super_res_factor)
 
@@ -772,7 +780,7 @@ def get_data_loaders(args, kwargs, mean=None, std=None):
     output_resolution = (int(train_res * args.dataset_resample),
                          int(train_res * args.dataset_resample))
     reproj_angle = 30.0
-    reproj_scale = 0.5 / args.super_res_factor
+    reproj_scale = 0.5
 
     logging.info("Building dataset with resample rate {}, super resolution factor {}".format(args.dataset_resample,
                                                                                              args.super_res_factor))
