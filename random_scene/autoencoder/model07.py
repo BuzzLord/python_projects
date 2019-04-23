@@ -429,6 +429,12 @@ class Net(nn.Module):
             attention=None
         )  # b, 135, 8/sf, 8/sf
 
+        self.super_res_upsample = nn.Sequential(
+            UpsampleInterpolate(scale_factor=(output_resolution[0] / input_resolution[0],
+                                              output_resolution[1] / input_resolution[1]))
+        )
+
+        # Warped decoder
         # Input: b, 135+6, 8/sf, 8/sf
         self.decoder_block1 = Net.build_decoder_block(
             135 + 6, 101, upsample_method,
@@ -460,11 +466,7 @@ class Net(nn.Module):
             extra_layers=extra_layers['d6'] if 'd6' in extra_layers else None,
             attention=attention['d6'] if 'd6' in attention else None
         )  # b, 32, 256/sf, 256/sf
-
-        self.decoder_upsample = nn.Sequential(
-            UpsampleInterpolate(scale_factor=(output_resolution[0] / input_resolution[0],
-                                              output_resolution[1] / input_resolution[1]))
-        )  # b, 32, 256, 256
+        # Upsample by sf between 6 and 7
         self.decoder_block7 = Net.build_decoder_block(
             32, 32, None,
             extra_layers=extra_layers['d7'] if 'd7' in extra_layers else None,
@@ -475,12 +477,44 @@ class Net(nn.Module):
             nn.Tanh()
         )  # b, 4, 256, 256
 
-        d6_planes = 32
-        self.remap_left_output = Net.build_remap_block(d6_planes, activation, layers=6)
-        self.remap_right_output = Net.build_remap_block(d6_planes, activation, layers=6)
-        self.remap_up_output = Net.build_remap_block(d6_planes, activation, layers=6)
-        self.remap_down_output = Net.build_remap_block(d6_planes, activation, layers=6)
-        self.remap_straight_output = Net.build_remap_block(d6_planes, activation, layers=6)
+        # Reprojection decoder
+        # Input: b, 135+6, 8/sf, 8/sf
+        self.reproj_block1 = Net.build_decoder_block(
+            135 + 6, 101, upsample_method,
+            extra_layers=extra_layers['r1'] if 'r1' in extra_layers else None,
+            attention=attention['r1'] if 'r1' in attention else None
+        )  # b, 101, 16/sf, 16/sf
+        self.reproj_block2 = Net.build_decoder_block(
+            101 * 2 + 6, 76, upsample_method,
+            extra_layers=extra_layers['r2'] if 'r2' in extra_layers else None,
+            attention=attention['r2'] if 'r2' in attention else None
+        )  # b, 76, 32/sf, 32/sf
+        self.reproj_block3 = Net.build_decoder_block(
+            76 * 2 + 6, 57, upsample_method,
+            extra_layers=extra_layers['r3'] if 'r3' in extra_layers else None,
+            attention=attention['r3'] if 'r3' in attention else None
+        )  # b, 57, 64/sf, 64/sf
+        self.reproj_block4 = Net.build_decoder_block(
+            57 * 2 + 6, 43, upsample_method,
+            extra_layers=extra_layers['r4'] if 'r4' in extra_layers else None,
+            attention=attention['r4'] if 'r4' in attention else None
+        )  # b, 43, 128/sf, 128/sf
+        self.reproj_block5 = Net.build_decoder_block(
+            43 * 2 + 6, 32, upsample_method,
+            extra_layers=extra_layers['r5'] if 'r5' in extra_layers else None,
+            attention=attention['r5'] if 'r5' in attention else None
+        )  # b, 32, 256/sf, 256/sf
+        self.reproj_block6 = Net.build_decoder_block(
+            32 * 2 + 6, 32, None,
+            extra_layers=extra_layers['r6'] if 'r6' in extra_layers else None,
+            attention=attention['r6'] if 'r6' in attention else None
+        )
+        r6_planes = 32
+        self.reproj_left_output = Net.build_reproj_block(r6_planes, activation, layers=6)
+        self.reproj_right_output = Net.build_reproj_block(r6_planes, activation, layers=6)
+        self.reproj_up_output = Net.build_reproj_block(r6_planes, activation, layers=6)
+        self.reproj_down_output = Net.build_reproj_block(r6_planes, activation, layers=6)
+        self.reproj_straight_output = Net.build_reproj_block(r6_planes, activation, layers=6)
 
         # Initialize weights
         for m in self.modules():
@@ -513,16 +547,16 @@ class Net(nn.Module):
         return nn.Sequential(OrderedDict(layer_list))
 
     @staticmethod
-    def build_remap_block(inplanes, activation, layers=3, reducing=True, reduce_factor=0.9):
-        remap_layers = [('remap_maxpool', nn.MaxPool2d(kernel_size=2))]
+    def build_reproj_block(inplanes, activation, layers=3, reducing=True, reduce_factor=0.9):
+        remap_layers = [('reproj_maxpool', nn.MaxPool2d(kernel_size=2))]
         for i in range(layers-1):
             layer_inplanes = round(inplanes * pow(reduce_factor, i)) if reducing else inplanes
             layer_outplanes = round(inplanes * pow(reduce_factor, i+1)) if reducing else inplanes
-            remap_layers.append(('remap_deconv'+str(i+1), ConvTransposeBlock(layer_inplanes, layer_outplanes, activation=activation)))
+            remap_layers.append(('reproj_deconv'+str(i+1), ConvTransposeBlock(layer_inplanes, layer_outplanes, activation=activation)))
         if layers > 0:
             layer_inplanes = round(inplanes * pow(reduce_factor, layers-1)) if reducing else inplanes
-            remap_layers.append(('remap_deconv'+str(layers), nn.ConvTranspose2d(layer_inplanes, 3, kernel_size=3, stride=1, padding=1, bias=False)))
-        remap_layers.append(('remap_tanh', nn.Tanh()))
+            remap_layers.append(('reproj_deconv'+str(layers), nn.ConvTranspose2d(layer_inplanes, 3, kernel_size=3, stride=1, padding=1, bias=False)))
+        remap_layers.append(('reproj_tanh', nn.Tanh()))
         return nn.Sequential(OrderedDict(remap_layers))
 
     def forward(self, x, p):
@@ -536,41 +570,53 @@ class Net(nn.Module):
 
         p0 = self.position_block0(p)
         h1 = torch.cat((p0, x7), dim=1)
-        z1 = self.decoder_block1(h1)
+        y1 = self.decoder_block1(h1)
+        w1 = self.reproj_block1(h1)
 
         p1 = self.position_block1(p0)
-        h2 = torch.cat((p1, z1, x6), dim=1)
-        z2 = self.decoder_block2(h2)
+        h2 = torch.cat((p1, y1, x6), dim=1)
+        y2 = self.decoder_block2(h2)
+        i2 = torch.cat((p1, w1, x6), dim=1)
+        w2 = self.reproj_block2(i2)
 
         p2 = self.position_block2(p1)
-        h3 = torch.cat((p2, z2, x5), dim=1)
-        z3 = self.decoder_block3(h3)
+        h3 = torch.cat((p2, y2, x5), dim=1)
+        y3 = self.decoder_block3(h3)
+        i3 = torch.cat((p2, w2, x5), dim=1)
+        w3 = self.reproj_block3(i3)
 
         p3 = self.position_block3(p2)
-        h4 = torch.cat((p3, z3, x4), dim=1)
-        z4 = self.decoder_block4(h4)
+        h4 = torch.cat((p3, y3, x4), dim=1)
+        y4 = self.decoder_block4(h4)
+        i4 = torch.cat((p3, w3, x4), dim=1)
+        w4 = self.reproj_block4(i4)
 
         p4 = self.position_block4(p3)
-        h5 = torch.cat((p4, z4, x3), dim=1)
-        z5 = self.decoder_block5(h5)
+        h5 = torch.cat((p4, y4, x3), dim=1)
+        y5 = self.decoder_block5(h5)
+        i5 = torch.cat((p4, w4, x3), dim=1)
+        w5 = self.reproj_block5(i5)
 
         p5 = self.position_block5(p4)
-        h6 = torch.cat((p5, z5, x2), dim=1)
-        z6 = self.decoder_block6(h6)
-        u6 = self.decoder_upsample(z6)
+        h6 = torch.cat((p5, y5, x2), dim=1)
+        y6 = self.decoder_block6(h6)
+        y6u = self.super_res_upsample(y6)
+        i6 = torch.cat((p5, w5, x2), dim=1)
+        w6 = self.reproj_block6(i6)
+        w6u = self.super_res_upsample(w6)
 
-        r1 = self.remap_left_output(u6)
-        r2 = self.remap_right_output(u6)
-        r3 = self.remap_up_output(u6)
-        r4 = self.remap_down_output(u6)
-        r5 = self.remap_straight_output(u6)
+        r1 = self.reproj_left_output(w6u)
+        r2 = self.reproj_right_output(w6u)
+        r3 = self.reproj_up_output(w6u)
+        r4 = self.reproj_down_output(w6u)
+        r5 = self.reproj_straight_output(w6u)
 
         rx = torch.cat((r1, r2, r3, r4, r5), dim=1)
 
-        z7 = self.decoder_block7(u6)
-        out = self.decoder_output(z7)
+        y7 = self.decoder_block7(y6u)
+        out = self.decoder_output(y7)
 
-        return out, rx, (x1, x2, x3, x4, x5, x6, z1, z2, z3, z4, z5, z6, u6, z7)
+        return out, rx, (x1, x2, x3, x4, x5, x6, y1, y2, y3, y4, y5, y6, y7)
 
 
 class ImageSaver:
@@ -663,7 +709,7 @@ def test(args, model, device, test_loader, criterion):
 
 def main(custom_args=None):
     # Training settings
-    model_number = "06"
+    model_number = "07"
     parser = argparse.ArgumentParser(description='PyTorch Model ' + model_number + ' Experiment')
     parser.add_argument('--batch-size', type=int, default=36, metavar='N',
                         help='input batch size for training (default: 36)')
@@ -822,7 +868,8 @@ def get_data_loaders(args, kwargs, mean=None, std=None):
 
 def parse_attention(args):
     attention = {}
-    valid_attention = ["e"+str(i) for i in range(1,6)] + ["d"+str(i) for i in range(1,8)] + ["p"+str(i) for i in range(1,6)]
+    valid_attention = ["e"+str(i) for i in range(1,6)] + ["d"+str(i) for i in range(1,8)] + \
+                      ["p"+str(i) for i in range(1,6)] + ["r"+str(i) for i in range(1,7)]
     if args.attention is not None:
         if len(args.attention) % 2 == 0:
             for i in range(0, len(args.attention), 2):
