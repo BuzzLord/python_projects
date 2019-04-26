@@ -29,27 +29,87 @@ class ExpandPosition(object):
 class SubsampleImages(object):
     """Downsample then upsample the images in the sample by scale."""
 
-    def __init__(self, scale, inter_down=cv2.INTER_AREA, inter_up=cv2.INTER_LINEAR):
-        self.scale = scale
-        self.inter_down = inter_down
-        self.inter_up = inter_up
-
     def __call__(self, sample):
-        def rescale(img):
+        def rescale(img, scale):
             orig_dim = (img.shape[1], img.shape[0])
-            scale_dim = (int(orig_dim[0] * self.scale), int(orig_dim[1] * self.scale))
+            scale_dim = (int(orig_dim[0] * scale), int(orig_dim[1] * scale))
             if scale_dim == orig_dim:
                 return img
+            interp_a = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            interp_b = cv2.INTER_AREA if scale > 1.0 else cv2.INTER_LINEAR
             return cv2.resize(
-                cv2.resize(img, scale_dim, interpolation=self.inter_down),
-                orig_dim, interpolation=self.inter_up)
+                cv2.resize(img, scale_dim, interpolation=interp_a),
+                orig_dim, interpolation=interp_b)
 
-        sample['generated'] = rescale(sample['generated'])
-        sample['left'] = rescale(sample['left'])
-        sample['right'] = rescale(sample['right'])
+        sample['generated'] = rescale(sample['generated'], 1.0)
+        sample['left'] = rescale(sample['left'], 1.0)
+        sample['right'] = rescale(sample['right'], 1.0)
 
         if 'generated_depth' in sample:
-            sample['generated_depth'] = rescale(sample['generated_depth'])
+            sample['generated_depth'] = rescale(sample['generated_depth'], 1.0)
+
+        return sample
+
+
+class SubsampleInputImages(object):
+    """Downsample then upsample the images in the sample by scale."""
+
+    def __call__(self, sample):
+        def rescale(img, scale):
+            orig_dim = (img.shape[1], img.shape[0])
+            scale_dim = (int(orig_dim[0] * scale), int(orig_dim[1] * scale))
+            if scale_dim == orig_dim:
+                return img
+            interp_a = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            interp_b = cv2.INTER_AREA if scale > 1.0 else cv2.INTER_LINEAR
+            return cv2.resize(
+                cv2.resize(img, scale_dim, interpolation=interp_a),
+                orig_dim, interpolation=interp_b)
+
+        if sample['super_res_factor'] > 1.0 and sample['resample'] > 1.0:
+            sample['left'] = rescale(sample['left'], 1.0 / sample['super_res_factor'])
+            sample['right'] = rescale(sample['right'], 1.0 / sample['super_res_factor'])
+
+        return sample
+
+
+class SubsampleGeneratedImages(object):
+    """Downsample then upsample the images in the sample by scale."""
+
+    def __call__(self, sample):
+        def rescale(img, scale):
+            orig_dim = (img.shape[1], img.shape[0])
+            scale_dim = (int(orig_dim[0] * scale), int(orig_dim[1] * scale))
+            if scale_dim == orig_dim:
+                return img
+            interp_a = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            interp_b = cv2.INTER_AREA if scale > 1.0 else cv2.INTER_LINEAR
+            return cv2.resize(
+                cv2.resize(img, scale_dim, interpolation=interp_a),
+                orig_dim, interpolation=interp_b)
+
+        sample['generated'] = rescale(sample['generated'], 1.0)
+
+        return sample
+
+
+class SubsampleGeneratedDepth(object):
+    """Downsample then upsample the images in the sample by scale."""
+
+    def __call__(self, sample):
+        def rescale(img, scale):
+            orig_dim = (img.shape[1], img.shape[0])
+            scale_dim = (int(orig_dim[0] * scale), int(orig_dim[1] * scale))
+            if scale_dim == orig_dim:
+                return img
+            interp_a = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            interp_b = cv2.INTER_AREA if scale > 1.0 else cv2.INTER_LINEAR
+            return cv2.resize(
+                cv2.resize(img, scale_dim, interpolation=interp_a),
+                orig_dim, interpolation=interp_b)
+
+        if 'generated_depth' in sample:
+            sample['generated_depth'] = rescale(sample['generated_depth'], 1.0)
 
         return sample
 
@@ -57,23 +117,20 @@ class SubsampleImages(object):
 class ResampleImages(object):
     """Downsample or upsample the images in the sample by scale."""
 
-    def __init__(self, scale, interpolation=cv2.INTER_AREA):
-        self.scale = scale
-        self.interpolation = interpolation
-
     def __call__(self, sample):
-        def rescale(img):
-            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+        def rescale(img, scale):
+            scale_dim = (int(img.shape[1] * scale), int(img.shape[0] * scale))
             if scale_dim == (img.shape[1], img.shape[0]):
                 return img
-            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+            interpolation = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            return cv2.resize(img, scale_dim, interpolation=interpolation)
 
-        sample['generated'] = rescale(sample['generated'])
-        sample['left'] = rescale(sample['left'])
-        sample['right'] = rescale(sample['right'])
+        sample['generated'] = rescale(sample['generated'], sample['resample'])
+        sample['left'] = rescale(sample['left'], sample['resample'] / sample['super_res_factor'])
+        sample['right'] = rescale(sample['right'], sample['resample'] / sample['super_res_factor'])
 
         if 'generated_depth' in sample:
-            sample['generated_depth'] = rescale(sample['generated_depth'])
+            sample['generated_depth'] = rescale(sample['generated_depth'], sample['resample'])
 
         return sample
 
@@ -81,19 +138,16 @@ class ResampleImages(object):
 class ResampleInputImages(object):
     """Downsample or upsample the input images in the sample by scale."""
 
-    def __init__(self, scale, interpolation=cv2.INTER_AREA):
-        self.scale = scale
-        self.interpolation = interpolation
-
     def __call__(self, sample):
-        def rescale(img):
-            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+        def rescale(img, scale):
+            scale_dim = (int(img.shape[1] * scale), int(img.shape[0] * scale))
             if scale_dim == (img.shape[1], img.shape[0]):
                 return img
-            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+            interpolation = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            return cv2.resize(img, scale_dim, interpolation=interpolation)
 
-        sample['left'] = rescale(sample['left'])
-        sample['right'] = rescale(sample['right'])
+        sample['left'] = rescale(sample['left'], sample['resample'] / sample['super_res_factor'])
+        sample['right'] = rescale(sample['right'], sample['resample'] / sample['super_res_factor'])
 
         return sample
 
@@ -101,18 +155,15 @@ class ResampleInputImages(object):
 class ResampleGeneratedImages(object):
     """Downsample or upsample the images in the sample by scale."""
 
-    def __init__(self, scale, interpolation=cv2.INTER_AREA):
-        self.scale = scale
-        self.interpolation = interpolation
-
     def __call__(self, sample):
-        def rescale(img):
-            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+        def rescale(img, scale):
+            scale_dim = (int(img.shape[1] * scale), int(img.shape[0] * scale))
             if scale_dim == (img.shape[1], img.shape[0]):
                 return img
-            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+            interpolation = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            return cv2.resize(img, scale_dim, interpolation=interpolation)
 
-        sample['generated'] = rescale(sample['generated'])
+        sample['generated'] = rescale(sample['generated'], sample['resample'])
 
         return sample
 
@@ -120,19 +171,16 @@ class ResampleGeneratedImages(object):
 class ResampleGeneratedDepth(object):
     """Downsample or upsample the images in the sample by scale."""
 
-    def __init__(self, scale, interpolation=cv2.INTER_AREA):
-        self.scale = scale
-        self.interpolation = interpolation
-
     def __call__(self, sample):
-        def rescale(img):
-            scale_dim = (int(img.shape[1] * self.scale), int(img.shape[0] * self.scale))
+        def rescale(img, scale):
+            scale_dim = (int(img.shape[1] * scale), int(img.shape[0] * scale))
             if scale_dim == (img.shape[1], img.shape[0]):
                 return img
-            return cv2.resize(img, scale_dim, interpolation=self.interpolation)
+            interpolation = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
+            return cv2.resize(img, scale_dim, interpolation=interpolation)
 
         if 'generated_depth' in sample:
-            sample['generated_depth'] = rescale(sample['generated_depth'])
+            sample['generated_depth'] = rescale(sample['generated_depth'], sample['resample'])
 
         return sample
 
@@ -270,7 +318,7 @@ class NormalizeDepth(object):
 class RandomSceneDataset(Dataset):
     """Random scene dataset."""
 
-    def __init__(self, root_dir, transform=None, depth=False, reverse=False):
+    def __init__(self, root_dir, transform=None, depth=False, reverse=False, super_res_factor=1.0, resample_rate=1.0):
         """
         Args:
             root_dir (string): Directory with all the images.
@@ -280,6 +328,8 @@ class RandomSceneDataset(Dataset):
         self.root_dir = root_dir
         self.scene_data = []
         self.depth = depth
+        self.super_res_factor = super_res_factor
+        self.resample_rate = resample_rate
         logging.info("Checking dataset directory listing for {}".format(root_dir))
         file_list = [f for f in listdir(self.root_dir) if isfile(join(self.root_dir, f)) and f.startswith("ss") and f.endswith(".png")]
         logging.info("Found " + str(len(file_list)) + " files. Collating filenames into list.")
@@ -305,6 +355,7 @@ class RandomSceneDataset(Dataset):
                 logging.error("Missing right file: " + right_name)
                 continue
             position = np.array([float(fg.group(4)), float(fg.group(5)), float(fg.group(6))], dtype=np.float32)
+
             self.scene_data.append((f, left_name, right_name, position, False))
             if reverse:
                 self.scene_data.append((f, left_name, right_name, position, True))
@@ -341,7 +392,9 @@ class RandomSceneDataset(Dataset):
             'left': left_image_color,
             'right_name': right_name,
             'right': right_image_color,
-            'position': position
+            'position': position,
+            'resample': self.resample_rate,
+            'super_res_factor': self.super_res_factor
         }
 
         if self.depth:
