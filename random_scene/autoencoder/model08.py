@@ -664,33 +664,54 @@ def rescale_tensor(x, scale):
     return F.interpolate(x, scale_factor=scale, mode=mode, align_corners=align)
 
 
-def train(args, model, device, train_loader, criterion, optimizer, epoch, img_saver):
+def choose_random_index(sample_counts):
+    total = sum(sample_counts)
+    p = random() * total
+    i = 0
+    while p > sample_counts[i]:
+        p -= sample_counts[i]
+        i += 1
+    return i
+
+
+def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_saver):
     model.train()
     train_loss = [1.0]
-    resample = args.dataset_resample if args.dataset_resample is not None and len(args.dataset_resample) > 0 else [1.0]
-    for batch_idx, data in enumerate(train_loader):
-        scale = resample[math.floor(random() * len(resample))]
-        data_input = rescale_tensor(torch.cat((data['left'], data['right']), dim=1).to(device), scale)
-        data_actual = rescale_tensor(torch.cat((data['generated'], data['generated_depth']), dim=1).to(device), scale)
-        remap_actual = rescale_tensor(torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
-                                                 data['reproj_down'], data['reproj_forward']), dim=1).to(device), scale)
-        position = data['position'].to(device)
-        optimizer.zero_grad()
-        data_output, remap_output, _ = model(data_input, position)
-        loss = criterion(data_output, data_actual, remap_output, remap_actual)
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
-        optimizer.step()
-        train_loss.append(loss.item())
-        if batch_idx % args.log_interval == 0:
-            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.5f} ({:.6f})'.format(
-                epoch, batch_idx * args.batch_size, len(train_loader.dataset),
-                100. * batch_idx / len(train_loader), mean(train_loss), stdev(train_loss)))
-            train_loss = []
-            if batch_idx % (args.log_interval * 10) == 0:
-                img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
-                               remap_output.cpu().data, remap_actual.cpu().data,
-                               join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
+    samples_remaining = [len(dl.dataset) for dl in train_loaders]
+    total_samples = sum(samples_remaining)
+    data_loaders = [iter(dl) for dl in train_loaders]
+    batch_idx = 0
+
+    while sum(samples_remaining) > 0:
+        i = choose_random_index(samples_remaining)
+        try:
+            data = next(data_loaders[i])
+            data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
+            data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
+            remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
+                                      data['reproj_down'], data['reproj_forward']), dim=1).to(device)
+            position = data['position'].to(device)
+            optimizer.zero_grad()
+            data_output, remap_output, _ = model(data_input, position)
+            loss = criterion(data_output, data_actual, remap_output, remap_actual)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
+            optimizer.step()
+            train_loss.append(loss.item())
+            if batch_idx % args.log_interval == 0:
+                samples_complete = total_samples - sum(samples_remaining)
+                logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.5f} ({:.6f})'.format(
+                    epoch, samples_complete, total_samples, 100. * samples_complete / total_samples,
+                    mean(train_loss), stdev(train_loss)))
+                train_loss = []
+                if batch_idx % (args.log_interval * 10) == 0:
+                    img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
+                                   remap_output.cpu().data, remap_actual.cpu().data,
+                                   join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
+            samples_remaining[i] -= data_input.shape[0]
+            batch_idx += 1
+        except StopIteration:
+            logging.error("Tried to load from empty data_loader {}".format(i))
 
     #if epoch % 1 == 0:
     #    img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
@@ -698,31 +719,31 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch, img_sa
     #                   join(args.model_path, 'image_{}.png'.format(epoch)))
 
 
-def test(args, model, device, test_loader, criterion):
+def test(args, model, device, test_loaders, criterion):
     model.eval()
-    test_loss = []
-    resample = args.dataset_resample if args.dataset_resample is not None and len(args.dataset_resample) > 0 else [1.0]
     with torch.no_grad():
-        for r in resample:
+        for i, test_loader in enumerate(test_loaders):
+            test_loss = []
             for data in test_loader:
-                data_input = rescale_tensor(torch.cat((data['left'], data['right']), dim=1).to(device), r)
-                data_actual = rescale_tensor(torch.cat((data['generated'], data['generated_depth']), dim=1).to(device), r)
-                remap_actual = rescale_tensor(torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
-                                                         data['reproj_down'], data['reproj_forward']), dim=1).to(device), r)
+                data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
+                data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
+                remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
+                                          data['reproj_down'], data['reproj_forward']), dim=1).to(device)
                 position = data['position'].to(device)
                 data_output, remap_output, _ = model(data_input, position)
                 test_loss.append(criterion(data_output, data_actual, remap_output, remap_actual).item())
 
-    logging.info('Test set: Average loss: {:.6f} ({:.6f})\n'.format(mean(test_loss), stdev(test_loss)))
+            logging.info('Test set ({}): Average loss: {:.6f} ({:.6f})\n'.format(args.dataset_resample[i],
+                                                                                 mean(test_loss), stdev(test_loss)))
 
 
 def main(custom_args=None):
     # Training settings
     model_number = "08"
     parser = argparse.ArgumentParser(description='PyTorch Model ' + model_number + ' Experiment')
-    parser.add_argument('--batch-size', type=int, default=36, metavar='N',
+    parser.add_argument('--batch-size', type=int, nargs='+', default=[36], metavar='N',
                         help='input batch size for training (default: 36)')
-    parser.add_argument('--test-batch-size', type=int, default=72, metavar='N',
+    parser.add_argument('--test-batch-size', type=int, nargs='+', default=[72], metavar='N',
                         help='input batch size for testing (default: 72)')
     parser.add_argument('--epochs', type=int, default=20, metavar='N',
                         help='number of epochs to train (default: 20)')
@@ -748,7 +769,7 @@ def main(custom_args=None):
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
                         help='filename to log output to')
-    parser.add_argument('--dataset-resample', type=float, nargs='+', metavar='S',
+    parser.add_argument('--dataset-resample', type=float, nargs='+', default=[1.0], metavar='S',
                         help='resample/resize the dataset images (can take a list, default 1.0)')
     parser.add_argument('--dataset-train', type=str, metavar='PATH',
                         help='training dataset path')
@@ -781,6 +802,7 @@ def main(custom_args=None):
         file_handler.setFormatter(log_formatter)
         root_logger.addHandler(file_handler)
 
+    logging.info("\n*** Starting Model {}".format(model_number))
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     logging.info("Using random seed " + str(args.seed))
@@ -791,7 +813,7 @@ def main(custom_args=None):
     kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
     dataset_mean, dataset_std = [0.334, 0.325, 0.320, 0.683], [0.666, 0.675, 0.680, 0.683]
 
-    test_loader, train_loader, = get_data_loaders(args, kwargs, mean=dataset_mean, std=dataset_std)
+    test_loaders, train_loaders, = get_data_loaders(args, kwargs, mean=dataset_mean, std=dataset_std)
 
     model = Net(downsample_method='conv', upsample_method='conv', super_res_factor=args.super_res_factor,
                 extra_layers=parse_extra_layers(args), attention=parse_attention(args), activation=get_activation(args))
@@ -815,8 +837,8 @@ def main(custom_args=None):
     img_saver = ImageSaver(mean=dataset_mean, std=dataset_std, nrows=6, super_res_factor=args.super_res_factor)
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
-        train(args, model, device, train_loader, criterion, optimizer, epoch, img_saver)
-        test(args, model, device, test_loader, criterion)
+        train(args, model, device, train_loaders, criterion, optimizer, epoch, img_saver)
+        test(args, model, device, test_loaders, criterion)
         torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
 
 
@@ -828,52 +850,60 @@ def get_data_loaders(args, kwargs, mean=None, std=None):
     train_res = int(args.dataset_train.split('_')[-1])
     test_res = int(args.dataset_test.split('_')[-1])
     test_scale = train_res / test_res
-    # input_resolution = (int(train_res * args.dataset_resample / args.super_res_factor),
-    #                     int(train_res * args.dataset_resample / args.super_res_factor))
-    # output_resolution = (int(train_res * args.dataset_resample),
-    #                      int(train_res * args.dataset_resample))
+
     reproj_angle = 30.0
     reproj_scale = 0.5
 
-    logging.info("Building dataset with resample rate {}, super resolution factor {}".format(args.dataset_resample,
-                                                                                             args.super_res_factor))
+    if len(args.dataset_resample) != len(args.batch_size):
+        logging.error("Dataset resample list not the same length as training set batch size!")
+        raise ValueError("Dataset resample list not the same length as training set batch size")
+    if len(args.dataset_resample) != len(args.test_batch_size):
+        logging.error("Dataset resample list not the same length as test set batch size!")
+        raise ValueError("Dataset resample list not the same length as test set batch size")
 
-    train_set = dl.RandomSceneDataset(join('..', args.dataset_train), depth=True, reverse=True,
-                                      super_res_factor=args.super_res_factor,
-                                      transform=transforms.Compose(
-        [dl.ResampleInputImages(),
-         dl.ResampleGeneratedImages(),
-         dl.ResampleGeneratedDepth(),
-         dl.GenerateReprojectedImages(name="forward", scale=reproj_scale, xrot=0.0, yrot=0.0),
-         dl.GenerateReprojectedImages(name="left", scale=reproj_scale, xrot=reproj_angle, yrot=0.0),
-         dl.GenerateReprojectedImages(name="right", scale=reproj_scale, xrot=-reproj_angle, yrot=0.0),
-         dl.GenerateReprojectedImages(name="up", scale=reproj_scale, xrot=0.0, yrot=reproj_angle),
-         dl.GenerateReprojectedImages(name="down", scale=reproj_scale, xrot=0.0, yrot=-reproj_angle),
-         dl.ToTensor(),
-         dl.NormalizeImages(mean=mean[0:3], std=std[0:3]),
-         dl.NormalizeDepth(mean=mean[3:4], std=std[3:4])
-         ]))
-    test_set = dl.RandomSceneDataset(join('..', args.dataset_test), depth=True, reverse=False,
-                                     super_res_factor=args.super_res_factor, resample_rate=test_scale,
-                                     transform=transforms.Compose(
-        [dl.ResampleInputImages(),
-         dl.ResampleGeneratedImages(),
-         dl.ResampleGeneratedDepth(),
-         dl.GenerateReprojectedImages(name="forward", scale=reproj_scale, xrot=0.0, yrot=0.0),
-         dl.GenerateReprojectedImages(name="left", scale=reproj_scale, xrot=reproj_angle, yrot=0.0),
-         dl.GenerateReprojectedImages(name="right", scale=reproj_scale, xrot=-reproj_angle, yrot=0.0),
-         dl.GenerateReprojectedImages(name="up", scale=reproj_scale, xrot=0.0, yrot=reproj_angle),
-         dl.GenerateReprojectedImages(name="down", scale=reproj_scale, xrot=0.0, yrot=-reproj_angle),
-         dl.ToTensor(),
-         dl.NormalizeImages(mean=mean[0:3], std=std[0:3]),
-         dl.NormalizeDepth(mean=mean[3:4], std=std[3:4])
-         ]))
+    logging.info("Building {} datasets with resample rate {}, super resolution factor {}"
+                 .format(len(args.dataset_resample), args.dataset_resample, args.super_res_factor))
 
-    logging.info("Configuring dataset loader with train batch size {}, test batch size {}".format(args.batch_size,
-                                                                                                  args.test_batch_size))
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, **kwargs)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.test_batch_size, shuffle=True, **kwargs)
-    return test_loader, train_loader
+    train_loaders = []
+    test_loaders = []
+    for resample, batch_size, test_batch_size in zip(args.dataset_resample, args.batch_size, args.test_batch_size):
+        train_set = dl.RandomSceneDataset(join('..', args.dataset_train), depth=True, reverse=True,
+                                          super_res_factor=args.super_res_factor, resample_rate=resample,
+                                          transform=transforms.Compose(
+            [dl.ResampleInputImages(),
+             dl.ResampleGeneratedImages(),
+             dl.ResampleGeneratedDepth(),
+             dl.GenerateReprojectedImages(name="forward", scale=reproj_scale, xrot=0.0, yrot=0.0),
+             dl.GenerateReprojectedImages(name="left", scale=reproj_scale, xrot=reproj_angle, yrot=0.0),
+             dl.GenerateReprojectedImages(name="right", scale=reproj_scale, xrot=-reproj_angle, yrot=0.0),
+             dl.GenerateReprojectedImages(name="up", scale=reproj_scale, xrot=0.0, yrot=reproj_angle),
+             dl.GenerateReprojectedImages(name="down", scale=reproj_scale, xrot=0.0, yrot=-reproj_angle),
+             dl.ToTensor(),
+             dl.NormalizeImages(mean=mean[0:3], std=std[0:3]),
+             dl.NormalizeDepth(mean=mean[3:4], std=std[3:4])
+             ]))
+        test_set = dl.RandomSceneDataset(join('..', args.dataset_test), depth=True, reverse=False,
+                                         super_res_factor=args.super_res_factor,
+                                         resample_rate=resample * test_scale,
+                                         transform=transforms.Compose(
+            [dl.ResampleInputImages(),
+             dl.ResampleGeneratedImages(),
+             dl.ResampleGeneratedDepth(),
+             dl.GenerateReprojectedImages(name="forward", scale=reproj_scale, xrot=0.0, yrot=0.0),
+             dl.GenerateReprojectedImages(name="left", scale=reproj_scale, xrot=reproj_angle, yrot=0.0),
+             dl.GenerateReprojectedImages(name="right", scale=reproj_scale, xrot=-reproj_angle, yrot=0.0),
+             dl.GenerateReprojectedImages(name="up", scale=reproj_scale, xrot=0.0, yrot=reproj_angle),
+             dl.GenerateReprojectedImages(name="down", scale=reproj_scale, xrot=0.0, yrot=-reproj_angle),
+             dl.ToTensor(),
+             dl.NormalizeImages(mean=mean[0:3], std=std[0:3]),
+             dl.NormalizeDepth(mean=mean[3:4], std=std[3:4])
+             ]))
+
+        logging.info("Configuring dataset loader with train batch size {}, test batch size {}, resample rate {}"
+                     .format(batch_size, test_batch_size, resample))
+        train_loaders.append(torch.utils.data.DataLoader(train_set, batch_size=batch_size, shuffle=True, **kwargs))
+        test_loaders.append(torch.utils.data.DataLoader(test_set, batch_size=test_batch_size, shuffle=True, **kwargs))
+    return test_loaders, train_loaders
 
 
 def parse_attention(args):

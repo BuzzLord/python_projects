@@ -146,8 +146,10 @@ class ResampleInputImages(object):
             interpolation = cv2.INTER_LINEAR if scale > 1.0 else cv2.INTER_AREA
             return cv2.resize(img, scale_dim, interpolation=interpolation)
 
-        sample['left'] = rescale(sample['left'], sample['resample'] / sample['super_res_factor'])
-        sample['right'] = rescale(sample['right'], sample['resample'] / sample['super_res_factor'])
+        sample['left'] = rescale(sample['left'], 1.0 / sample['super_res_factor'])
+        sample['left'] = rescale(sample['left'], sample['resample'])
+        sample['right'] = rescale(sample['right'], 1.0 / sample['super_res_factor'])
+        sample['right'] = rescale(sample['right'], sample['resample'])
 
         return sample
 
