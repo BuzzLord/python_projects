@@ -5,7 +5,7 @@ import argparse
 import logging
 import math
 from statistics import mean, stdev
-from random import random
+from random import random, shuffle
 from collections import OrderedDict
 
 import torch
@@ -680,15 +680,17 @@ def choose_random_index(sample_counts):
 
 def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_saver):
     model.train()
-    train_loss = [1.0]
+    train_loss = [] if len(train_loaders) > 1 else [0.0]
     batch_idx = 0
     total_batches = min([len(dl) for dl in train_loaders])
     data_loaders = [iter(dl) for dl in train_loaders]
+    loader_select = list(range(len(data_loaders)))
 
     while batch_idx < total_batches:
-        for i, data_loader in enumerate(data_loaders):
+        shuffle(loader_select)
+        for i in loader_select:
             try:
-                data = next(data_loader)
+                data = next(data_loaders[i])
                 data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
                 data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
                 # remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
@@ -701,17 +703,17 @@ def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_s
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
                 optimizer.step()
                 train_loss.append(loss.item())
-                if batch_idx % args.log_interval == 0:
-                    logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.5f} ({:.6f})'.format(
-                        epoch, batch_idx, total_batches, 100. * batch_idx / total_batches,
-                        mean(train_loss), stdev(train_loss)))
-                    train_loss = []
-                    if batch_idx % (args.log_interval * 10) == 0:
-                        img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
-                                       join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
-
             except StopIteration:
                 logging.error("Tried to load from empty data_loader {}".format(i))
+
+        if batch_idx % args.log_interval == 0:
+            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.5f} ({:.6f})'.format(
+                epoch, batch_idx, total_batches, 100. * batch_idx / total_batches,
+                mean(train_loss), stdev(train_loss)))
+            train_loss = []
+            if batch_idx % (args.log_interval * 10) == 0:
+                img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
+                               join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
         batch_idx += 1
 
     #if epoch % 1 == 0:
