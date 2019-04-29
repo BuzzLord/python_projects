@@ -681,40 +681,38 @@ def choose_random_index(sample_counts):
 def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_saver):
     model.train()
     train_loss = [1.0]
-    samples_remaining = [len(dl.dataset) for dl in train_loaders]
-    total_samples = sum(samples_remaining)
-    data_loaders = [iter(dl) for dl in train_loaders]
     batch_idx = 0
+    total_batches = min([len(dl) for dl in train_loaders])
+    data_loaders = [iter(dl) for dl in train_loaders]
 
-    while sum(samples_remaining) > 0:
-        i = choose_random_index(samples_remaining)
-        try:
-            data = next(data_loaders[i])
-            data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
-            data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
-            # remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
-            #                           data['reproj_down'], data['reproj_forward']), dim=1).to(device)
-            position = data['position'].to(device)
-            optimizer.zero_grad()
-            data_output, _, _ = model(data_input, position)
-            loss = criterion(data_output, data_actual)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
-            optimizer.step()
-            train_loss.append(loss.item())
-            if batch_idx % args.log_interval == 0:
-                samples_complete = total_samples - sum(samples_remaining)
-                logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.5f} ({:.6f})'.format(
-                    epoch, samples_complete, total_samples, 100. * samples_complete / total_samples,
-                    mean(train_loss), stdev(train_loss)))
-                train_loss = []
-                if batch_idx % (args.log_interval * 10) == 0:
-                    img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
-                                   join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
-            samples_remaining[i] -= data_input.shape[0]
-            batch_idx += 1
-        except StopIteration:
-            logging.error("Tried to load from empty data_loader {}".format(i))
+    while batch_idx < total_batches:
+        for i, data_loader in enumerate(data_loaders):
+            try:
+                data = next(data_loader)
+                data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
+                data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
+                # remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
+                #                           data['reproj_down'], data['reproj_forward']), dim=1).to(device)
+                position = data['position'].to(device)
+                optimizer.zero_grad()
+                data_output, _, _ = model(data_input, position)
+                loss = criterion(data_output, data_actual)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
+                optimizer.step()
+                train_loss.append(loss.item())
+                if batch_idx % args.log_interval == 0:
+                    logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.5f} ({:.6f})'.format(
+                        epoch, batch_idx, total_batches, 100. * batch_idx / total_batches,
+                        mean(train_loss), stdev(train_loss)))
+                    train_loss = []
+                    if batch_idx % (args.log_interval * 10) == 0:
+                        img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
+                                       join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
+
+            except StopIteration:
+                logging.error("Tried to load from empty data_loader {}".format(i))
+        batch_idx += 1
 
     #if epoch % 1 == 0:
     #    img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
