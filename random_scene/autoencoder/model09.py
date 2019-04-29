@@ -39,15 +39,15 @@ class ModelLoss(nn.Module):
         return torch.cat(ft, dim=1)
 
     def forward(self, input, target, remap_input=None, remap_target=None, reduction='mean'):
-        xs, ys = torch.meshgrid([torch.arange(input.shape[2]), torch.arange(input.shape[3])])
-        mask = Variable(1.0 - (torch.pow((xs.type(dtype=input.dtype) - ((input.shape[2] - 1.0) / 2.0)) / (input.shape[2] - 1.0), 2.0)
-                               + torch.pow((ys.type(dtype=input.dtype) - ((input.shape[3] - 1.0) / 2.0)) / (input.shape[3] - 1.0), 2.0)),
-                        requires_grad=False).to(self.device)
+        # xs, ys = torch.meshgrid([torch.arange(input.shape[2]), torch.arange(input.shape[3])])
+        # mask = Variable(1.0 - (torch.pow((xs.type(dtype=input.dtype) - ((input.shape[2] - 1.0) / 2.0)) / (input.shape[2] - 1.0), 2.0)
+        #                        + torch.pow((ys.type(dtype=input.dtype) - ((input.shape[3] - 1.0) / 2.0)) / (input.shape[3] - 1.0), 2.0)),
+        #                 requires_grad=False).to(self.device)
 
-        value_l1_loss = F.l1_loss(mask * input, mask * target, reduction=reduction)
+        value_l1_loss = F.l1_loss(input, target, reduction=reduction)
         input_log_edges = F.conv2d(input, self.edge_filter_4, padding=1)
         target_log_edges = F.conv2d(target, self.edge_filter_4, padding=1)
-        edge_l1_loss = F.l1_loss(mask * input_log_edges, mask * target_log_edges, reduction=reduction)
+        edge_l1_loss = F.l1_loss(input_log_edges, target_log_edges, reduction=reduction)
         primary_l1_loss = value_l1_loss * self.value_edge_weight + edge_l1_loss * (1.0 - self.value_edge_weight)
 
         if remap_input is not None and remap_target is not None:
