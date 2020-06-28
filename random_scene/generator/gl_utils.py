@@ -228,8 +228,9 @@ warp_frag_shader_src = """
             }
             void main() {
                 vec4 color = sampleFivePoints(oTexCoord);
-                vec4 depth = pow(sampleDepth(oTexCoord), vec4(8.0)); 
-                FragColor = vec4(color.rgb, depth.r);
+                //vec4 depth = pow(sampleDepth(oTexCoord), vec4(8.0)); 
+                //FragColor = vec4(color.rgb, depth.r);
+                FragColor = vec4(color.rgb, 1.0);
             }"""
 
 

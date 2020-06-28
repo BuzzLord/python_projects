@@ -1,8 +1,11 @@
 from os import listdir
-from os.path import isfile, join, exists
+from os.path import isfile, join, exists, basename
 from re import match
 import torch
 import numpy as np
+import random
+import threading
+import queue
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, utils
 
@@ -201,6 +204,62 @@ class GenerateReprojectedImages(object):
         remap = cv2.remap(sample['generated'], phi, theta, interpolation=interpolation, borderValue=0,
                           borderMode=cv2.BORDER_CONSTANT)
         sample[self.name] = remap
+
+        return sample
+
+
+class UnwarpImages(object):
+    def __init__(self, scale=1.0, fov=97.62815):
+        # 106.2602 comes from 2*atan(4/3), to give the 90 deg inner image a dim of 3/4 of the full dim.
+        # 97.62815 comes from 2*atan(8/7), for 7/8 image as inner 90 deg
+        self.scale = scale
+        self.proj = {
+            'forward': Projection(xrot=0.0, yrot=0.0, fov=fov, aspect=1.0),
+            'left': Projection(xrot=0.0, yrot=-90.0, fov=fov, aspect=1.0),
+            'right': Projection(xrot=0.0, yrot=90.0, fov=fov, aspect=1.0),
+            'up': Projection(xrot=-90.0, yrot=0.0, fov=fov, aspect=1.0),
+            'down': Projection(xrot=90.0, yrot=0.0, fov=fov, aspect=1.0)
+        }
+
+    def _remap_image(self, sample, image):
+        input_dim = (sample[image].shape[1], sample[image].shape[0])
+        output_dim = (input_dim[0] * self.scale * 0.5, input_dim[1] * self.scale * 0.5)
+        output_shape = (int(sample[image].shape[0] * self.scale), int(sample[image].shape[1] * self.scale), sample[image].shape[2])
+        interpolation = cv2.INTER_AREA
+        remap = {}
+        for dir in self.proj.keys():
+            phi, theta = self.proj[dir].generate_map(output_dim=output_dim, input_dim=input_dim)
+            remap[dir] = cv2.remap(sample[image], phi, theta, interpolation=interpolation, borderValue=0, borderMode=cv2.BORDER_CONSTANT)
+
+        output_img = np.zeros(output_shape)
+        # output_img[0:int(output_shape[0] / 4), int(output_shape[1] / 4):int(output_shape[1] * 3 / 4), :] = \
+        #     remap['left'][int(output_dim[0] / 2):, :, :]
+        # output_img[int(output_shape[0] / 4):int(output_shape[0] * 3 / 4), int(output_shape[1] / 4):int(output_shape[1] * 3 / 4), :] = \
+        #     remap['forward'][:, :, :]
+        # output_img[int(output_shape[0] * 3 / 4):, int(output_shape[1] / 4):int(output_shape[1] * 3 / 4), :] = \
+        #     remap['right'][0:int(output_dim[0] / 2), :, :]
+        # output_img[int(output_shape[0] / 4):int(output_shape[0] * 3 / 4), 0:int(output_shape[1] / 4), :] = \
+        #     remap['up'][:, int(output_dim[1] / 2):, :]
+        # output_img[int(output_shape[0] / 4):int(output_shape[0] * 3 / 4), int(output_shape[1] * 3 / 4):, :] = \
+        #     remap['down'][:, 0:int(output_dim[1] / 2), :]
+
+        output_img[int(output_shape[0] / 4):int(output_shape[0] * 3 / 4), int(output_shape[1] / 4):int(output_shape[1] * 3 / 4), :] = \
+            remap['forward'][:, :, :]
+        output_img[int(output_shape[0] / 4):int(output_shape[0] * 3 / 4), int(output_shape[1] * 3 / 4):, :] = \
+            remap['up'][:, 0:int(output_dim[1] / 2), :]
+        output_img[int(output_shape[0] / 4):int(output_shape[0] * 3 / 4), 0:int(output_shape[1] / 4), :] = \
+            remap['down'][:, int(output_dim[1] / 2):, :]
+        output_img[int(output_shape[0] * 3 / 4):, int(output_shape[1] / 4):int(output_shape[1] * 3 / 4), :] = \
+            remap['left'][0:int(output_dim[0] / 2), :, :]
+        output_img[0:int(output_shape[0] / 4), int(output_shape[1] / 4):int(output_shape[1] * 3 / 4), :] = \
+            remap['right'][int(output_dim[0] / 2):, :, :]
+
+        sample[image] = output_img
+
+    def __call__(self, sample):
+        self._remap_image(sample, 'generated')
+        self._remap_image(sample, 'left')
+        self._remap_image(sample, 'right')
 
         return sample
 
@@ -408,15 +467,193 @@ class RandomSceneDataset(Dataset):
         return sample
 
 
+# -- SIREN ------------------------
+
+class RandomSceneSirenFileList(Dataset):
+    """Random scene dataset."""
+
+    def __init__(self, root_dir, dataset_seed, batch_size, num_workers, pin_memory, test_percent=0.1, is_test=False, shuffle=True, pos_scale=[1.0,1.0,1.0], transform=None):
+        """
+        Args:
+            root_dir (string): Directory with all the images.
+            dataset_seed (string): String value of the integer seed of the scene we want
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.root_dir = root_dir
+        self.dataset_seed = dataset_seed
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.pin_memory = pin_memory
+        self.shuffle = shuffle
+        self.pos_scale = pos_scale
+        self.test_percent = min(max(test_percent, 0.0), 1.0)
+        self.is_test = is_test
+        self.file_names = []
+
+        logging.info("Checking dataset directory listing for {}".format(root_dir))
+        file_list = [f for f in listdir(self.root_dir) if isfile(join(self.root_dir, f)) and f.startswith("ss") and f.endswith(".png")]
+        logging.info("Found " + str(len(file_list)) + " files. Collating filenames into list.")
+        all_file_names = []
+        for f in file_list:
+            fg = match("ss([123])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", f)
+            seed = fg.group(2)
+            if seed != dataset_seed:
+                continue
+
+            version = fg.group(1)
+            if version not in ["3"]:
+                logging.error("Skipping file, version != 3: " + f)
+                continue
+
+            all_file_names.append(f)
+
+        random.seed(int(self.dataset_seed))
+        random.shuffle(all_file_names)
+        file_count = int(len(all_file_names) * self.test_percent)
+        if self.is_test:
+            self.file_names = all_file_names[0:file_count]
+        else:
+            self.file_names = all_file_names[file_count:]
+
+        self.transform = transform
+
+    def _dataloader_worker(self, filename, dataloader_queue):
+        sampleset = RandomSceneSirenSampleSet(file_path=join(self.root_dir, filename),
+                                              pos_scale=self.pos_scale, transform=self.transform)
+        dataloader = torch.utils.data.DataLoader(sampleset, batch_size=self.batch_size, num_workers=self.num_workers,
+                                                 pin_memory=self.pin_memory, shuffle=self.shuffle)
+        dataloader_queue.put(iter(dataloader))
+
+    def generate_dataloaders(self, file_list):
+        dataloader_queue = queue.Queue()
+        threads = [threading.Thread(target=self._dataloader_worker, args=(filename, dataloader_queue)) for filename in file_list]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        dataloaders = []
+        while not dataloader_queue.empty():
+            dataloaders.append(dataloader_queue.get())
+        return dataloaders
+
+    def __len__(self):
+        return len(self.file_names)
+
+    def __getitem__(self, idx):
+        return self.file_names[idx]
+
+
+class RandomSceneSirenSampleSet(Dataset):
+    """Random scene dataset."""
+
+    def __init__(self, file_path, pos_scale=[1.0,1.0,1.0], transform=None):
+        """
+        Args:
+            file_path (string): File for the image to sample.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        self.file_path = file_path
+        logging.debug("Generating file samples from {}".format(file_path))
+
+        fg = match("ss([123])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", basename(file_path))
+        self.x = float(fg.group(3)) * pos_scale[0]
+        self.y = float(fg.group(4)) * pos_scale[1]
+        self.z = float(fg.group(5)) * pos_scale[2]
+
+        self.image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
+        self.image = np.clip((2.0 / 255.0) * self.image, 0.0, 2.0) - 1.0
+        self.image = self.image[:, :, 0:3][:, :, ::-1]
+        self.width = self.image.shape[0]
+        self.height = self.image.shape[1]
+        self.half_width = float(self.width) / 2.0
+        self.half_height = float(self.height) / 2.0
+        self.transform = transform
+
+    def _get_input(self, x, y):
+        theta = np.sin(((float(x)+0.5) - self.half_width) / self.half_width)
+        phi = np.sin((self.half_height - (float(y)+0.5)) / self.half_height)
+        input_vector = torch.FloatTensor([self.x, self.y, self.z, theta, phi])
+        return input_vector
+
+    def _get_output(self, x, y):
+        image_sample = self.image[x, y]
+        output_vector = torch.FloatTensor([image_sample[0], image_sample[1], image_sample[2]])
+        return output_vector
+
+    def get_in_order_sample(self):
+        inputs = []
+        outputs = []
+        for y in range(self.height):
+            for x in range(self.width):
+                inputs.append(self._get_input(x, y))
+                outputs.append(self._get_output(x, y))
+        sample = {"inputs": torch.stack(inputs, 0), "outputs": torch.stack(outputs, 0)}
+        if self.transform:
+            sample = self.transform(sample)
+        return sample
+
+    def __len__(self):
+        return self.width * self.height
+
+    def __getitem__(self, idx):
+        #print("Sample {} from {}".format(idx, self.file_path))
+        ix = int(idx / self.width)
+        iy = int(idx % self.width)
+        sample = {"inputs": self._get_input(ix, iy), "outputs": self._get_output(ix, iy)}
+        if self.transform:
+            sample = self.transform(sample)
+        return sample
+
+
 def main():
+    #sampleset = RandomSceneSirenSampleSet(file_path=join("screens3_512","ss3_335248_0.111_0.044_0.134_g.png"))
+    #dataloader = DataLoader(sampleset, batch_size=4, shuffle=True)
+    #for i_batch, sample_batched in enumerate(dataloader):
+    #    sample_inputs = sample_batched["inputs"]
+    #    sample_outputs = sample_batched["outputs"]
+
+    train_set = RandomSceneSirenFileList(root_dir="screens3_512", dataset_seed="335248", batch_size=256, num_workers=4,
+                                         shuffle=True, pos_scale=[1/4,1/3,1/3])
+    train_loader = DataLoader(train_set, batch_size=3, shuffle=True)
+    for image_idx, image_filename in enumerate(train_loader):
+        image_sample_loaders = train_set.generate_dataloaders(image_filename)
+
+        train_loss = [] if len(image_sample_loaders) > 1 else [0.0]
+        batch_idx = 0
+        total_batches = min([len(dl) for dl in image_sample_loaders])
+        data_loaders = [iter(dl) for dl in image_sample_loaders]
+        loader_select = list(range(len(data_loaders)))
+
+        while batch_idx < total_batches:
+            random.shuffle(loader_select)
+            samples = []
+            for i in loader_select:
+                try:
+                    samples.append(next(data_loaders[i]))
+                except StopIteration:
+                    logging.error("Tried to load from empty data_loader {}".format(i))
+            data_input = torch.cat([sample["inputs"] for sample in samples], 0)
+            data_output = torch.cat([sample["outputs"] for sample in samples], 0)
+            batch_idx += 1
+
+
+        #for i_batch, sample_batched in enumerate(dataloader):
+        #    sample_inputs = sample_batched["inputs"]
+        #    sample_outputs = sample_batched["outputs"]
+
+
+def main_old():
     # dataset_transforms = transforms.Compose([ToTensor()])
-    dataset_transforms = transforms.Compose([SubsampleImages(0.125),
+    dataset_transforms = transforms.Compose([UnwarpImages(scale=1.5, fov=110.0),
                                              ToTensor(),
                                              NormalizeImages(
                                                  mean=[0.0,0.0,0.0],
                                                  std=[1.0,1.0,1.0])
                                              ])
-    dataset = RandomSceneDataset(root_dir="screens_256",
+    dataset = RandomSceneDataset(root_dir="test_256",
                                  transform=dataset_transforms)
     dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=4)
     for i_batch, sample_batched in enumerate(dataloader):
