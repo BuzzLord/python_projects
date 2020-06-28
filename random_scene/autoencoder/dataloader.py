@@ -564,7 +564,8 @@ class RandomSceneSirenSampleSet(Dataset):
         self.z = float(fg.group(5)) * pos_scale[2]
 
         self.image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
-        self.image = np.clip((2.0 / 255.0) * self.image, 0.0, 2.0) - 1.0
+        # self.image = np.clip((2.0 / 255.0) * self.image, 0.0, 2.0) - 1.0
+        self.image = np.clip((1.0 / 255.0) * self.image, 0.0, 1.0)
         self.image = self.image[:, :, 0:3][:, :, ::-1]
         self.width = self.image.shape[0]
         self.height = self.image.shape[1]

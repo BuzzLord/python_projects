@@ -1,5 +1,6 @@
 from __future__ import print_function
 import os
+from collections import OrderedDict
 from os.path import join
 import argparse
 import logging
@@ -25,6 +26,25 @@ class ModelLoss(nn.Module):
         return loss
 
 
+class Sine(nn.Module):
+    __constants__ = ['inplace']
+
+    def __init__(self, inplace=False):
+        super(Sine, self).__init__()
+        self.inplace = inplace
+
+    def forward(self, x):
+        if self.inplace:
+            result = torch.sin_(x)
+        else:
+            result = torch.sin(x)
+        return result
+
+    def extra_repr(self):
+        inplace_str = 'inplace=True' if self.inplace else ''
+        return inplace_str
+
+
 class Siren(nn.Module):
     #  Training regimes; all about the same number of parameters
     # = (10*L*H) + (O*H) + (N-2)*H*H
@@ -44,26 +64,41 @@ class Siren(nn.Module):
         output_size = 3
 
         self.hidden_layers = hidden_layers
-        self.linear = [nn.Linear(input_size, hidden_size)]
-        for _ in range(hidden_layers-2):
-            self.linear.append(nn.Linear(hidden_size, hidden_size))
-        self.linear.append(nn.Linear(hidden_size, output_size))
-        for i, m in enumerate(self.linear):
-            self.add_module("linear{:d}".format(i+1), m)
+        layers = [nn.Sequential(OrderedDict([("linear", nn.Linear(input_size, hidden_size)),
+                                             ("sine", Sine(inplace=False)),
+                                             ("batchnorm", nn.BatchNorm1d(hidden_size))]))]
+        for i in range(2, hidden_layers):
+            layers.append(
+                nn.Sequential(
+                    OrderedDict([("linear".format(i), nn.Linear(hidden_size, hidden_size)),
+                                 ("sine".format(i), Sine(inplace=False)),
+                                 ("batchnorm".format(i), nn.BatchNorm1d(hidden_size))])
+                ))
+        layers.append(nn.Sequential(
+            OrderedDict([("linear", nn.Linear(hidden_size, output_size))])
+        ))
+        self.network = nn.Sequential(OrderedDict([("layer{:d}".format(i+1), layer) for i, layer in enumerate(layers)]))
 
-        self.batch_norm = [nn.BatchNorm1d(hidden_size) for _ in range(hidden_layers-1)]
-        for i, m in enumerate(self.batch_norm):
-            self.add_module("bn{:d}".format(i+1), m)
+        #self.linear1 = nn.Linear(input_size, hidden_size)
+        #self.linear2 = nn.Linear(hidden_size, hidden_size)
+        #self.linear3 = nn.Linear(hidden_size, hidden_size)
+        #self.linear4 = nn.Linear(hidden_size, hidden_size)
+        #self.linear5 = nn.Linear(hidden_size, output_size)
+
+        #self.bn1 = nn.BatchNorm1d(hidden_size)
+        #self.bn2 = nn.BatchNorm1d(hidden_size)
+        #self.bn3 = nn.BatchNorm1d(hidden_size)
+        #self.bn4 = nn.BatchNorm1d(hidden_size)
 
         self.first_weight_scale = 30.0
 
         # Initialize weights
-        for m in self.modules():
+        for k, m in self.named_modules():
             if isinstance(m, nn.Linear):
                 n = m.in_features
                 m.weight.data.uniform_(-math.sqrt(6/n), math.sqrt(6/n))
                 m.bias.data.uniform_(-math.sqrt(6/n), math.sqrt(6/n))
-                if m == self.linear[0]:
+                if k == "network.layer1.linear" or k == "linear1":
                     m.weight.data.mul_(self.first_weight_scale)
             elif isinstance(m, nn.BatchNorm1d):
                 m.weight.data.fill_(1)
@@ -73,9 +108,17 @@ class Siren(nn.Module):
         x = torch.cat([torch.cat((torch.sin(math.pow(2,i)*math.pi*inputs), torch.cos(math.pow(2,i)*math.pi*inputs)),
                                  dim=1) for i in range(self.pos_encoding_levels)], dim=1)
 
-        for i in range(self.hidden_layers-1):
-            x = self.batch_norm[i](torch.sin(self.linear[i](x)))
-        out = self.linear[-1](x)
+        #for i in range(self.hidden_layers-1):
+        #    x = self.batch_norm[i](torch.sin(self.linear[i](x)))
+        #out = self.linear[-1](x)
+
+        #x = self.bn1(torch.sin(self.linear1(x)))
+        #x = self.bn2(torch.sin(self.linear2(x)))
+        #x = self.bn3(torch.sin(self.linear3(x)))
+        #x = self.bn4(torch.sin(self.linear4(x)))
+        #out = self.linear5(x)
+
+        out = self.network(x)
 
         return out
 
@@ -142,7 +185,11 @@ def test(args, model, device, test_loader, criterion, epoch):
                 test_loss.append(criterion(data_output, data_actual).item())
                 batch_idx += 1
 
-            logging.info('Test Image {:02d} loss: {:.3e}'.format(image_idx+1, test_loss[-1]))
+            if len(test_loss) > 1:
+                loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
+            else:
+                loss_value = "{:.3e}".format(test_loss[0])
+            logging.info('Test set ({:.0f}%) loss: {}'.format((image_idx+1)/len(test_loader), loss_value))
 
             if image_idx % int(len(test_loader)/6) == 0:
                 saver_loader = dl.RandomSceneSirenSampleSet(join(test_set.root_dir, image_filename[0]),
@@ -154,14 +201,14 @@ def test(args, model, device, test_loader, criterion, epoch):
 
                 data_actual = data_actual.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
                 data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
-                images = ((torch.cat((data_actual, data_output), dim=3) * 0.5) + 0.5).clamp(0, 1)
+                images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
                 save_image(images, join(args.model_path, "output{:02d}-{:02d}.png".format(epoch, image_idx)))
 
         if len(test_loss) > 1:
             loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
         else:
             loss_value = "{:.3e}".format(test_loss[0])
-        logging.info('Test set loss: {}'.format(loss_value))
+        logging.info('Test set final loss: {}'.format(loss_value))
 
 
 def main(custom_args=None):
@@ -264,12 +311,12 @@ def get_data_loaders(args, kwargs):
     position_scale = [1 / 4, 1 / 3, 1 / 3]
     dataset_path = join('..', args.dataset)
     train_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
-                                            batch_size=512*64, num_workers=4, pin_memory=True, shuffle=True,
+                                            batch_size=512, num_workers=4, pin_memory=True, shuffle=True,
                                             pos_scale=position_scale)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=4, shuffle=True)
 
     test_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=True,
-                                           batch_size=512*128, num_workers=4, pin_memory=False, shuffle=False,
+                                           batch_size=512, num_workers=4, pin_memory=False, shuffle=False,
                                            pos_scale=position_scale)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=4, shuffle=False)
 
