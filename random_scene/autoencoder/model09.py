@@ -21,8 +21,8 @@ import dataloader as dl
 class ModelLoss(nn.Module):
     def __init__(self, device, value_edge_weight=0.7, remap_weight=0.2):
         super(ModelLoss, self).__init__()
-        self.edge_filter_4 = ModelLoss.generate_filter(depth=4).to(device)
-        self.edge_filter_15 = ModelLoss.generate_filter(depth=15).to(device)
+        self.edge_filter_4 = ModelLoss.generate_filter(depth=4).to(device, dtype=torch.float32)
+        self.edge_filter_15 = ModelLoss.generate_filter(depth=15).to(device, dtype=torch.float32)
         self.value_edge_weight = value_edge_weight
         self.remap_weight = remap_weight
         self.device = device
@@ -42,7 +42,7 @@ class ModelLoss(nn.Module):
         # xs, ys = torch.meshgrid([torch.arange(input.shape[2]), torch.arange(input.shape[3])])
         # mask = Variable(1.0 - (torch.pow((xs.type(dtype=input.dtype) - ((input.shape[2] - 1.0) / 2.0)) / (input.shape[2] - 1.0), 2.0)
         #                        + torch.pow((ys.type(dtype=input.dtype) - ((input.shape[3] - 1.0) / 2.0)) / (input.shape[3] - 1.0), 2.0)),
-        #                 requires_grad=False).to(self.device)
+        #                 requires_grad=False).to(self.device, dtype=torch.float32)
 
         value_l1_loss = F.l1_loss(input, target, reduction=reduction)
         input_log_edges = F.conv2d(input, self.edge_filter_4, padding=1)
@@ -359,7 +359,7 @@ class Net(nn.Module):
         if downsample_method not in ['maxpool', 'conv']:
             raise ValueError('expecting downsample method conv or maxpool')
         if upsample_method not in ['interpolate', 'conv']:
-            raise ValueError('expecting upsample method interpolate or maxpool')
+            raise ValueError('expecting upsample method interpolate or conv')
         if super_res_factor is None:
             self.super_res_factor = (1.0, 1.0)
         else:
@@ -481,7 +481,8 @@ class Net(nn.Module):
             nn.Tanh()
         )  # b, 4, input_res * super_res_factor
 
-        if False:
+        reproj = False
+        if reproj:
             # Reprojection decoder
             # Input: b, 135+6, input_res / 32
             self.reproj_block1 = Net.build_decoder_block(
@@ -691,16 +692,16 @@ def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_s
         for i in loader_select:
             try:
                 data = next(data_loaders[i])
-                data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
-                data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
+                data_input = torch.cat((data['left'], data['right']), dim=1).to(device, dtype=torch.float32)
+                data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device, dtype=torch.float32)
                 # remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
-                #                           data['reproj_down'], data['reproj_forward']), dim=1).to(device)
-                position = data['position'].to(device)
+                #                           data['reproj_down'], data['reproj_forward']), dim=1).to(device, dtype=torch.float32)
+                position = data['position'].to(device, dtype=torch.float32)
                 optimizer.zero_grad()
                 data_output, _, _ = model(data_input, position)
                 loss = criterion(data_output, data_actual)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
+                # torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip_max_norm)
                 optimizer.step()
                 train_loss.append(loss.item())
             except StopIteration:
@@ -712,7 +713,9 @@ def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_s
                 mean(train_loss), stdev(train_loss)))
             train_loss = []
             if batch_idx % (args.log_interval * 10) == 0:
-                img_saver.save(data_output.cpu().data, data_actual.cpu().data, data_input.cpu().data,
+                img_saver.save(data_output.cpu().to(dtype=torch.float32).data,
+                               data_actual.cpu().to(dtype=torch.float32).data,
+                               data_input.cpu().to(dtype=torch.float32).data,
                                join(args.model_path, 'image_{}_{}.png'.format(epoch, batch_idx)))
         batch_idx += 1
 
@@ -722,19 +725,26 @@ def train(args, model, device, train_loaders, criterion, optimizer, epoch, img_s
     #                   join(args.model_path, 'image_{}.png'.format(epoch)))
 
 
-def test(args, model, device, test_loaders, criterion):
+def test(args, model, device, test_loaders, criterion, img_saver):
     model.eval()
     with torch.no_grad():
         for i, test_loader in enumerate(test_loaders):
             test_loss = []
             for data in test_loader:
-                data_input = torch.cat((data['left'], data['right']), dim=1).to(device)
-                data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device)
+                data_input = torch.cat((data['left'], data['right']), dim=1).to(device, dtype=torch.float32)
+                data_actual = torch.cat((data['generated'], data['generated_depth']), dim=1).to(device, dtype=torch.float32)
                 # remap_actual = torch.cat((data['reproj_left'], data['reproj_right'], data['reproj_up'],
-                #                           data['reproj_down'], data['reproj_forward']), dim=1).to(device)
-                position = data['position'].to(device)
+                #                           data['reproj_down'], data['reproj_forward']), dim=1).to(device, dtype=torch.float32)
+                position = data['position'].to(device, dtype=torch.float32)
                 data_output, _, _ = model(data_input, position)
                 test_loss.append(criterion(data_output, data_actual).item())
+                if random() < 0.01:
+                    rnd_code = int(random() * 99999)
+                    img_saver.save(data_output.cpu().to(dtype=torch.float32).data,
+                                   data_actual.cpu().to(dtype=torch.float32).data,
+                                   data_input.cpu().to(dtype=torch.float32).data,
+                                   join(args.model_path, 'image_{}_{:05d}.png'.format(
+                                       args.dataset_resample[i], rnd_code)))
 
             logging.info('Test set ({}): Average loss: {:.6f} ({:.6f})\n'.format(args.dataset_resample[i],
                                                                                  mean(test_loss), stdev(test_loss)))
@@ -826,7 +836,7 @@ def main(custom_args=None):
             logging.info("Loading model from {}".format(model_path))
             model.load_state_dict(torch.load(model_path))
             model.eval()
-    model = model.to(device)
+    model = model.to(device, dtype=torch.float32)
 
     logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), Decay {}".format(args.lr, args.beta1, args.beta2,
                                                                                        args.weight_decay))
@@ -841,7 +851,7 @@ def main(custom_args=None):
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
         train(args, model, device, train_loaders, criterion, optimizer, epoch, img_saver)
-        test(args, model, device, test_loaders, criterion)
+        test(args, model, device, test_loaders, criterion, img_saver)
         torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
 
 

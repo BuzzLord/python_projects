@@ -62,7 +62,7 @@ class Projection:
 
 
 if __name__ == "__main__":
-    proj = Projection(xrot=0.0, yrot=40.0, aspect=1.0, fov=60)
+    proj = Projection(xrot=0.0, yrot=90.0, aspect=1.0, fov=60)
     filename = join(join("..", "screens2_512"), "ss2_001760r_1.00_0.00_0.00.png")
     phi, theta = proj.generate_map(output_dim=(512,512), input_dim=(512,512))
     proj.main(filename, (phi, theta))
