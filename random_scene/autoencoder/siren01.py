@@ -135,12 +135,14 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
                                                             pos_scale=train_set.pos_scale, transform=train_set.transform)
                 sample = saver_loader.get_in_order_sample()
-                data_input = sample["inputs"].to(device, dtype=torch.float32)
-                data_actual = sample["outputs"].to(device, dtype=torch.float32)
-                data_output = model(data_input)
+                data_input = sample["inputs"].to(device, dtype=torch.float32).view((512, 512, 5))
+                data_output = torch.zeros((512, 512, 3)).to(device, dtype=torch.float32)
 
-                data_actual = data_actual.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
-                data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
+                for i in range(512):
+                    data_output[:,i,:] = model(data_input[:,i,:])
+
+                data_actual = sample["outputs"].transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
+                data_output = data_output.view((512*512, 3)).transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
                 images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
                 save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
                 model.train()
