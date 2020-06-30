@@ -135,11 +135,12 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
                                                             pos_scale=train_set.pos_scale, transform=train_set.transform)
                 sample = saver_loader.get_in_order_sample()
-                data_input = sample["inputs"].to(device, dtype=torch.float32).view((512, 512, 5))
-                data_output = torch.zeros((512, 512, 3)).to(device, dtype=torch.float32)
+                data_input = sample["inputs"].view((512, 512, 5)).to(device, dtype=torch.float32)
+                data_output = torch.zeros((512, 512, 3))
 
                 for i in range(512):
-                    data_output[:,i,:] = model(data_input[:,i,:])
+                    data_output_row = model(data_input[:,i,:])
+                    data_output[:, i, :] = data_output_row.cpu()
 
                 data_actual = sample["outputs"].transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
                 data_output = data_output.view((512*512, 3)).transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
