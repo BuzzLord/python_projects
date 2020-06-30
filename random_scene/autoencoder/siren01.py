@@ -46,12 +46,12 @@ class LinearActivation(nn.Module):
 class Siren(nn.Module):
     #  Training regimes; all about the same number of parameters
     # = (10*L*H) + (O*H) + (N-2)*H*H
-    # L:     10        10        10
-    # H:    384       256       512
-    # N:      9        18         6
-    # O:      3         3         3
+    # L:     10        10        10        10        10
+    # H:    512       384       256       192       128
+    # N:      4         6        10        16        34
+    # O:      3         3         3         3         3
     #
-    #   1071744   1074944   1101312
+    #    577024    629376    550656    535872    537472
 
     def __init__(self, hidden_size=256, hidden_layers=5, pos_encoding_levels=4):
         super(Siren, self).__init__()
@@ -131,6 +131,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 epoch, image_idx+1, len(train_loader), 100. * (image_idx+1) / len(train_loader), mean(loss_data),
                 stdev(loss_data)))
             if image_idx % 10 == 0:
+                model.eval()
                 saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
                                                             pos_scale=train_set.pos_scale, transform=train_set.transform)
                 sample = saver_loader.get_in_order_sample()
@@ -142,6 +143,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
                 images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
                 save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
+                model.train()
 
 
 def test(args, model, device, test_loader, criterion, epoch):
