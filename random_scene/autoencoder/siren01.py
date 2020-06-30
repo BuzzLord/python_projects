@@ -132,17 +132,20 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 stdev(loss_data)))
             if image_idx % 10 == 0:
                 model.eval()
+                torch.cuda.empty_cache()
                 saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
                                                             pos_scale=train_set.pos_scale, transform=train_set.transform)
                 sample = saver_loader.get_in_order_sample()
-                data_input = sample["inputs"].to(device, dtype=torch.float32)
-                data_output = torch.zeros((data_input.shape[0], 3))
+                data_input = sample["inputs"]
+                data_output = torch.zeros(sample["outputs"].shape)
 
                 batch_indices = [(i, min(i+args.batch_size, data_output.shape[0]))
                                  for i in range(0, data_output.shape[0], args.batch_size)]
 
                 for a, b in batch_indices:
-                    data_output_row = model(data_input[a:b, :])
+                    data_input_row = data_input[a:b, :]
+                    data_input_row = data_input_row.to(device, dtype=torch.float32)
+                    data_output_row = model(data_input_row)
                     data_output[a:b, :] = data_output_row.cpu()
 
                 data_actual = sample["outputs"].transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
