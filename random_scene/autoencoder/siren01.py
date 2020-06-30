@@ -35,6 +35,14 @@ class Sine(nn.Module):
         return torch.sin(self.w0 * x)
 
 
+class LinearActivation(nn.Module):
+    def __init__(self):
+        super(LinearActivation, self).__init__()
+
+    def forward(self, x):
+        return x
+
+
 class Siren(nn.Module):
     #  Training regimes; all about the same number of parameters
     # = (10*L*H) + (O*H) + (N-2)*H*H
@@ -53,27 +61,26 @@ class Siren(nn.Module):
         input_size = 2 * 5 * pos_encoding_levels
         output_size = 3
 
-        self.first_weight_scale = 30.0
+        self.w0_initial = 30.0
         self.hidden_layers = hidden_layers
-        layers = [nn.Sequential(OrderedDict([("linear", nn.Linear(input_size, hidden_size)),
-                                             ("sine", Sine(w0=self.first_weight_scale))]))]
-        for i in range(2, hidden_layers):
-            layers.append(
-                nn.Sequential(
-                    OrderedDict([("linear", nn.Linear(hidden_size, hidden_size)),
-                                 ("sine", Sine())])
-                ))
-        layers.append(nn.Sequential(
-            OrderedDict([("linear", nn.Linear(hidden_size, output_size))])
-        ))
-        self.network = nn.Sequential(OrderedDict([("layer{:d}".format(i+1), layer) for i, layer in enumerate(layers)]))
+        self.network = self.make_network(hidden_layers, hidden_size, input_size, output_size)
 
-        # Initialize weights
-        for k, m in self.named_modules():
-            if isinstance(m, nn.Linear):
-                n = m.in_features
-                m.weight.data.uniform_(-math.sqrt(6/n), math.sqrt(6/n))
-                m.bias.data.uniform_(-math.sqrt(1/n), math.sqrt(1/n))
+    @staticmethod
+    def construct_layer(in_size, out_size, activation=None, c=6.0, w0=1.0):
+        layers = OrderedDict([("linear", nn.Linear(in_size, out_size)),
+                              ("activation", Sine(w0) if activation is None else activation)])
+        std = math.sqrt(1 / in_size)
+        c_std = math.sqrt(c) * std / w0
+        layers["linear"].weight.data.uniform_(-c_std, c_std)
+        layers["linear"].bias.data.uniform_(-std, std)
+        return layers
+
+    def make_network(self, hidden_layers, hidden_size, input_size, output_size):
+        layers = [nn.Sequential(self.construct_layer(input_size, hidden_size, w0=self.w0_initial))]
+        for i in range(2, hidden_layers):
+            layers.append(nn.Sequential(self.construct_layer(hidden_size, hidden_size)))
+        layers.append(nn.Sequential(self.construct_layer(hidden_size, output_size, activation=LinearActivation())))
+        return nn.Sequential(OrderedDict([("layer{:d}".format(i + 1), layer) for i, layer in enumerate(layers)]))
 
     def forward(self, inputs):
         x = torch.cat([torch.cat((torch.sin(math.pow(2,i)*math.pi*inputs), torch.cos(math.pow(2,i)*math.pi*inputs)),
@@ -123,6 +130,18 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e})'.format(
                 epoch, image_idx+1, len(train_loader), 100. * (image_idx+1) / len(train_loader), mean(loss_data),
                 stdev(loss_data)))
+            if image_idx % 10 == 0:
+                saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
+                                                            pos_scale=train_set.pos_scale, transform=train_set.transform)
+                sample = saver_loader.get_in_order_sample()
+                data_input = sample["inputs"].to(device, dtype=torch.float32)
+                data_actual = sample["outputs"].to(device, dtype=torch.float32)
+                data_output = model(data_input)
+
+                data_actual = data_actual.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
+                data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
+                images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
+                save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
 
 
 def test(args, model, device, test_loader, criterion, epoch):
@@ -168,7 +187,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                 data_actual = data_actual.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
                 data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
                 images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
-                save_image(images, join(args.model_path, "output{:02d}-{:02d}.png".format(epoch, image_idx)))
+                save_image(images, join(args.model_path, "test{:02d}-{:02d}.png".format(epoch, int(image_idx/int(len(test_loader)/6)))))
 
         if len(test_loss) > 1:
             loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
@@ -189,8 +208,8 @@ def main(custom_args=None):
                         help='number of epochs to train (default: 20)')
     parser.add_argument('--epoch-start', type=int, default=1, metavar='N',
                         help='epoch number to start counting from')
-    parser.add_argument('--lr', type=float, default=0.001, metavar='LR',
-                        help='learning rate (default: 0.001)')
+    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR',
+                        help='learning rate (default: 0.0001)')
     parser.add_argument('--beta1', type=float, default=0.9, metavar='B1',
                         help='Adam beta 1 (default: 0.9)')
     parser.add_argument('--beta2', type=float, default=0.999, metavar='B2',
@@ -253,6 +272,8 @@ def main(custom_args=None):
 
     test_loader, train_loader, = get_data_loaders(args, kwargs)
 
+    logging.info("Siren configured with pos_encoding = {}, hidden_size = {}, hidden_layers = {}".format(
+        args.pos_encoding, args.hidden_size, args.hidden_layers))
     model = Siren(hidden_size=args.hidden_size, hidden_layers=args.hidden_layers, pos_encoding_levels=args.pos_encoding)
     if len(args.load_model_state) > 0:
         model_path = os.path.join(args.model_path, args.load_model_state)
