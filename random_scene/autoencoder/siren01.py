@@ -131,28 +131,18 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 epoch, image_idx+1, len(train_loader), 100. * (image_idx+1) / len(train_loader), mean(loss_data),
                 stdev(loss_data)))
             if image_idx % 10 == 0:
-                model.eval()
-                torch.cuda.empty_cache()
-                saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
-                                                            pos_scale=train_set.pos_scale, transform=train_set.transform)
-                sample = saver_loader.get_in_order_sample()
-                data_input = sample["inputs"]
-                data_output = torch.zeros(sample["outputs"].shape)
+                with torch.no_grad():
+                    saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
+                                                                pos_scale=train_set.pos_scale,
+                                                                transform=train_set.transform)
+                    sample = saver_loader.get_in_order_sample()
+                    data_input = sample["inputs"].to(device, dtype=torch.float32)
+                    data_output = model(data_input)
 
-                batch_indices = [(i, min(i+args.batch_size, data_output.shape[0]))
-                                 for i in range(0, data_output.shape[0], args.batch_size)]
-
-                for a, b in batch_indices:
-                    data_input_row = data_input[a:b, :]
-                    data_input_row = data_input_row.to(device, dtype=torch.float32)
-                    data_output_row = model(data_input_row)
-                    data_output[a:b, :] = data_output_row.cpu()
-
-                data_actual = sample["outputs"].transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
-                data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
-                images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
-                save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
-                model.train()
+                    data_actual = sample["outputs"].transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
+                    data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
+                    images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
+                    save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
 
 
 def test(args, model, device, test_loader, criterion, epoch):
@@ -225,8 +215,13 @@ def main(custom_args=None):
                         help='Adam beta 1 (default: 0.9)')
     parser.add_argument('--beta2', type=float, default=0.999, metavar='B2',
                         help='Adam beta 2 (default: 0.999)')
-    parser.add_argument('--weight-decay', type=float, default=6e-7, metavar='D',
-                        help='Weight decay (default: 6e-7)')
+    parser.add_argument('--weight-decay', type=float, default=0., metavar='D',
+                        help='Weight decay (default: 0.)')
+    parser.add_argument('--schedule-step-size', type=int, default=4, metavar='S',
+                        help='Schedule step size for LR decay (default: 4)')
+    parser.add_argument('--schedule-gamma', type=float, default=0.1, metavar='G',
+                        help='Schedule gamma factor for LR decay (default: 0.1)')
+
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -294,17 +289,21 @@ def main(custom_args=None):
             model.eval()
     model = model.to(device, dtype=torch.float32)
 
-    logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), Decay {}".format(args.lr, args.beta1, args.beta2,
-                                                                                       args.weight_decay))
+    logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), ".format(args.lr, args.beta1, args.beta2) +
+                 "and Weight Decay {}".format(args.weight_decay))
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr, betas=(args.beta1, args.beta2),
                            weight_decay=args.weight_decay)
+    logging.info("Using StepLR Learning Rate Scheduler " +
+                 "with step size = {} and gamma = {}".format(args.schedule_step_size, args.schedule_gamma))
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.schedule_step_size, gamma=args.schedule_gamma)
     criterion = ModelLoss(device=device)
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
         train(args, model, device, train_loader, criterion, optimizer, epoch)
         test(args, model, device, test_loader, criterion, epoch)
         torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
+        scheduler.step()
 
 
 def get_data_loaders(args, kwargs):
