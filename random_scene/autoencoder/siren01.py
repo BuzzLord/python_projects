@@ -139,9 +139,9 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                     data_input = sample["inputs"].to(device, dtype=torch.float32)
                     data_output = model(data_input)
 
-                    data_actual = sample["outputs"].transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
-                    data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
-                    images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
+                    data_actual = convert_image(sample["outputs"])
+                    data_output = convert_image(data_output.cpu())
+                    images = torch.cat((data_actual, data_output), dim=3)
                     save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
 
 
@@ -182,12 +182,11 @@ def test(args, model, device, test_loader, criterion, epoch):
                                                             pos_scale=test_set.pos_scale, transform=test_set.transform)
                 sample = saver_loader.get_in_order_sample()
                 data_input = sample["inputs"].to(device, dtype=torch.float32)
-                data_actual = sample["outputs"].to(device, dtype=torch.float32)
                 data_output = model(data_input)
 
-                data_actual = data_actual.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
-                data_output = data_output.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3).cpu()
-                images = torch.cat((data_actual, data_output), dim=3).clamp(0, 1)
+                data_actual = convert_image(sample["outputs"])
+                data_output = convert_image(data_output.cpu())
+                images = torch.cat((data_actual, data_output), dim=3)
                 save_image(images, join(args.model_path, "test{:02d}-{:02d}.png".format(epoch, int(image_idx/int(len(test_loader)/6)))))
 
         if len(test_loss) > 1:
@@ -195,6 +194,12 @@ def test(args, model, device, test_loader, criterion, epoch):
         else:
             loss_value = "{:.3e}".format(test_loss[0])
         logging.info('Test set final loss: {}'.format(loss_value))
+
+
+def convert_image(data):
+    converted = data.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
+    converted = ((converted * 0.5) + 0.5).clamp(0, 1)
+    return converted
 
 
 def main(custom_args=None):
