@@ -545,16 +545,103 @@ class RandomSceneSirenFileList(Dataset):
         return self.file_names[idx]
 
 
-class RandomSceneSirenSampleSet(Dataset):
-    """Random scene dataset."""
+class SirenSampleRandomizePosition(object):
 
-    def __init__(self, file_path, pos_scale=[1.0,1.0,1.0], transform=None):
+    def vector_transform(self, inputs):
+        position = inputs[:, 0:3]
+
+        # Take sin values for theta/phi look angle, get cos of them
+        sin_u = inputs[:, 3]
+        sin_v = inputs[:, 4]
+        cos_u = torch.cos(torch.asin(sin_u))
+        cos_v = torch.cos(torch.asin(sin_v))
+
+        # Construct rotation matrices
+        rot_y = torch.stack((torch.stack((cos_u, torch.zeros(cos_u.shape), sin_u), dim=1),
+                             torch.stack((torch.zeros(cos_u.shape), torch.ones(cos_u.shape), torch.zeros(cos_u.shape)), dim=1),
+                             torch.stack((-sin_u, torch.zeros(cos_u.shape), cos_u), dim=1)), dim=-1)
+        rot_x = torch.stack((torch.stack((torch.ones(cos_v.shape), torch.zeros(cos_v.shape), torch.zeros(cos_v.shape)), dim=1),
+                             torch.stack((torch.zeros(cos_v.shape), cos_v, sin_v), dim=1),
+                             torch.stack((torch.zeros(cos_v.shape), -sin_v, cos_v), dim=1)), dim=-1)
+        rot = torch.matmul(rot_y, rot_x)
+
+        # Rotate a forward vector by the rot matrices
+        vec = (torch.ones((sin_u.shape[0], 1)) * torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32))
+        vec = torch.unsqueeze(vec, dim=-1)
+        look = torch.matmul(rot, vec).squeeze(-1)
+
+        # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
+        inv_look = 1 / look
+        sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
+        tmin = (sign - position) * inv_look
+        tmin_index = torch.abs(tmin).argmin(1)
+        tmin_out = torch.index_select(tmin, 1, tmin_index).diag()
+        tmax = (-sign - position) * inv_look
+        tmax_index = torch.abs(tmax).argmin(1)
+        tmax_out = torch.index_select(tmax, 1, tmax_index).diag()
+        # Randomly select a vector between the two intersection points, update pos to that
+        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
+        # max_position = position + look * tmax_out.unsqueeze(1)
+        # min_position = position + look * tmin_out.unsqueeze(1)
+        new_position = position + look * t.unsqueeze(1)
+        inputs[:, 0:3] = new_position
+        return inputs
+
+    def __call__(self, sample):
+        inputs = sample["inputs"]
+        position = inputs[0:3]
+
+        # Take sin values for theta/phi look angle, get cos of them
+        sin_u = inputs[3]
+        sin_v = inputs[4]
+        cos_u = torch.cos(torch.asin(sin_u))
+        cos_v = torch.cos(torch.asin(sin_v))
+
+        # Construct rotation matrices
+        rot_y = torch.tensor([[cos_u, 0, sin_u],
+                              [0, 1, 0],
+                              [-sin_u, 0, cos_u]], dtype=torch.float32)
+        rot_x = torch.tensor([[1, 0, 0],
+                              [0, cos_v, sin_v],
+                              [0, -sin_v, cos_v]], dtype=torch.float32)
+        rot = torch.matmul(rot_y, rot_x)
+
+        # Rotate a forward vector by the rot matrices
+        vec = torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32)
+        vec = torch.unsqueeze(vec, dim=-1)
+        look = torch.matmul(rot, vec).squeeze(-1)
+
+        # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
+        inv_look = 1 / look
+        sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
+        tmin = (sign - position) * inv_look
+        tmin_index = torch.abs(tmin).argmin(0)
+        tmin_out = torch.index_select(tmin, 0, tmin_index)
+        tmax = (-sign - position) * inv_look
+        tmax_index = torch.abs(tmax).argmin(0)
+        tmax_out = torch.index_select(tmax, 0, tmax_index)
+        # Randomly select a vector between the two intersection points, update pos to that
+        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
+        # max_position = position + look * tmax_out.unsqueeze(1)
+        # min_position = position + look * tmin_out.unsqueeze(1)
+        new_position = position + look * t.unsqueeze(1)
+        inputs[0:3] = new_position
+        sample["inputs"] = inputs
+        return sample
+
+
+class RandomSceneSirenSampleSet(Dataset):
+    """Random scene dataset. """
+
+    def __init__(self, file_path, pos_scale=None, transform=None):
         """
         Args:
             file_path (string): File for the image to sample.
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
+        if pos_scale is None:
+            pos_scale = [1.0, 1.0, 1.0]
         self.file_path = file_path
         logging.debug("Generating file samples from {}".format(file_path))
 
@@ -565,7 +652,6 @@ class RandomSceneSirenSampleSet(Dataset):
 
         self.image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
         self.image = np.clip((2.0 / 255.0) * self.image, 0.0, 2.0) - 1.0
-        # self.image = np.clip((1.0 / 255.0) * self.image, 0.0, 1.0)
         self.image = self.image[:, :, 0:3][:, :, ::-1]
         self.width = self.image.shape[0]
         self.height = self.image.shape[1]
@@ -574,14 +660,14 @@ class RandomSceneSirenSampleSet(Dataset):
         self.transform = transform
 
     def _get_input(self, x, y):
-        theta = np.sin(((float(x)+0.5) - self.half_width) / self.half_width)
-        phi = np.sin((self.half_height - (float(y)+0.5)) / self.half_height)
-        input_vector = torch.FloatTensor([self.x, self.y, self.z, theta, phi])
+        theta = ((float(x)+0.5) - self.half_width) / self.half_width
+        phi = (self.half_height - (float(y)+0.5)) / self.half_height
+        input_vector = torch.tensor([self.x, self.y, self.z, theta, phi], dtype=torch.float32)
         return input_vector
 
     def _get_output(self, x, y):
         image_sample = self.image[x, y]
-        output_vector = torch.FloatTensor([image_sample[0], image_sample[1], image_sample[2]])
+        output_vector = torch.tensor([image_sample[0], image_sample[1], image_sample[2]], dtype=torch.float32)
         return output_vector
 
     def get_in_order_sample(self):
@@ -589,11 +675,12 @@ class RandomSceneSirenSampleSet(Dataset):
         outputs = []
         for y in range(self.height):
             for x in range(self.width):
-                inputs.append(self._get_input(x, y))
-                outputs.append(self._get_output(x, y))
+                s = {"inputs": self._get_input(x, y), "outputs": self._get_output(x, y)}
+                if self.transform:
+                    s = self.transform(s)
+                inputs.append(s["inputs"])
+                outputs.append(s["outputs"])
         sample = {"inputs": torch.stack(inputs, 0), "outputs": torch.stack(outputs, 0)}
-        if self.transform:
-            sample = self.transform(sample)
         return sample
 
     def __len__(self):
@@ -610,6 +697,16 @@ class RandomSceneSirenSampleSet(Dataset):
 
 
 def main():
+    #sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,0.70710678,0],[0,0,0,0.70710678,0],
+    #                                               [0,-0.4330127,0.75,0,0.5],[0,0,0,0,0.5]], dtype=np.float32)),
+    #          "outputs": torch.from_numpy(np.zeros((2,3), dtype=np.float32))}
+    sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
+              "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
+    transform = SirenSampleRandomizePosition()
+    transform(sample)
+
+
+def main_old2():
     #sampleset = RandomSceneSirenSampleSet(file_path=join("screens3_512","ss3_335248_0.111_0.044_0.134_g.png"))
     #dataloader = DataLoader(sampleset, batch_size=4, shuffle=True)
     #for i_batch, sample_batched in enumerate(dataloader):

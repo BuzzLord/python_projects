@@ -277,7 +277,10 @@ class TextureBuffer:
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clamp)
 
         else:
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+            if mip_levels > 1:
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR)
+            else:
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR)
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR)
 
             if clamp is None:
@@ -324,6 +327,11 @@ class TextureBuffer:
         glBindFramebuffer(GL_FRAMEBUFFER, self.fboId)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0)
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, 0, 0)
+
+    def copy_data(self, data, bind=True):
+        if bind:
+            glBindTexture(GL_TEXTURE_2D, self.texId)
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, self.texSize[0], self.texSize[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
 
 
 class ShaderFill:

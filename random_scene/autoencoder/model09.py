@@ -29,9 +29,9 @@ class ModelLoss(nn.Module):
 
     @staticmethod
     def generate_filter(depth=4):
-        f = Variable(torch.FloatTensor([[[[-1 / 8, -1 / 8, -1 / 8],
-                                          [-1 / 8,  8 / 8, -1 / 8],
-                                          [-1 / 8, -1 / 8, -1 / 8]]]]),
+        f = Variable(torch.tensor([[[[-1 / 8, -1 / 8, -1 / 8],
+                                     [-1 / 8,  8 / 8, -1 / 8],
+                                     [-1 / 8, -1 / 8, -1 / 8]]]], dtype=torch.float32),
                      requires_grad=False) / float(depth)
         ft = (f,)
         for i in range(depth-1):

@@ -13,6 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision.utils import save_image
+from torchvision import transforms
 import dataloader as dl
 
 
@@ -97,6 +98,7 @@ class Siren(nn.Module):
 def train(args, model, device, train_loader, criterion, optimizer, epoch):
     model.train()
     train_set = train_loader.dataset
+    transform = dl.SirenSampleRandomizePosition()
     for image_idx, image_filename in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics()
@@ -115,7 +117,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                     samples.append(next(data_loaders[i]))
                 except StopIteration:
                     logging.error("Tried to load from empty data_loader {}".format(i))
-            data_input = torch.cat([sample["inputs"] for sample in samples], 0).to(device, dtype=torch.float32)
+            data_input = torch.cat([transform.vector_transform(sample["inputs"]) for sample in samples], 0).to(device, dtype=torch.float32)
             data_actual = torch.cat([sample["outputs"] for sample in samples], 0).to(device, dtype=torch.float32)
 
             optimizer.zero_grad()
@@ -133,8 +135,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             if image_idx % 10 == 0:
                 with torch.no_grad():
                     saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
-                                                                pos_scale=train_set.pos_scale,
-                                                                transform=train_set.transform)
+                                                                pos_scale=train_set.pos_scale)
                     sample = saver_loader.get_in_order_sample()
                     data_input = sample["inputs"].to(device, dtype=torch.float32)
                     data_output = model(data_input)
@@ -179,7 +180,7 @@ def test(args, model, device, test_loader, criterion, epoch):
 
             if image_idx % int(len(test_loader)/6) == 0:
                 saver_loader = dl.RandomSceneSirenSampleSet(join(test_set.root_dir, image_filename[0]),
-                                                            pos_scale=test_set.pos_scale, transform=test_set.transform)
+                                                            pos_scale=test_set.pos_scale)
                 sample = saver_loader.get_in_order_sample()
                 data_input = sample["inputs"].to(device, dtype=torch.float32)
                 data_output = model(data_input)
