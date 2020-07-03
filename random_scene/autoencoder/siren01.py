@@ -95,7 +95,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
 
         loss_data = []
         for batch_idx, sample in enumerate(data_loader):
-            data_input = transform.vector_transform(sample["inputs"]).to(device, dtype=torch.float32)
+            data_input = transform.vector_transform(sample["inputs"].to(device, dtype=torch.float32))
             data_actual = sample["outputs"].to(device, dtype=torch.float32)
 
             optimizer.zero_grad()

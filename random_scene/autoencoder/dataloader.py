@@ -543,6 +543,7 @@ class SirenSampleRandomizePosition(object):
     def vector_transform(self, inputs):
         if not self.apply_transform:
             return inputs
+        device = inputs.get_device()
         position = inputs[:, 0:3]
 
         # Take sin values for theta/phi look angle, get cos of them
@@ -552,16 +553,21 @@ class SirenSampleRandomizePosition(object):
         cos_v = torch.cos(torch.asin(sin_v))
 
         # Construct rotation matrices
-        rot_y = torch.stack((torch.stack((cos_u, torch.zeros(cos_u.shape), sin_u), dim=1),
-                             torch.stack((torch.zeros(cos_u.shape), torch.ones(cos_u.shape), torch.zeros(cos_u.shape)), dim=1),
-                             torch.stack((-sin_u, torch.zeros(cos_u.shape), cos_u), dim=1)), dim=-1)
-        rot_x = torch.stack((torch.stack((torch.ones(cos_v.shape), torch.zeros(cos_v.shape), torch.zeros(cos_v.shape)), dim=1),
-                             torch.stack((torch.zeros(cos_v.shape), cos_v, sin_v), dim=1),
-                             torch.stack((torch.zeros(cos_v.shape), -sin_v, cos_v), dim=1)), dim=-1)
+        zeros_u = torch.zeros(sin_u.shape, device=device)
+        zeros_v = torch.zeros(sin_v.shape, device=device)
+        ones_u = torch.ones(sin_u.shape, device=device)
+        ones_v = torch.ones(sin_v.shape, device=device)
+        rot_y = torch.stack((torch.stack((cos_u, zeros_u, sin_u), dim=1),
+                             torch.stack((zeros_u, ones_u, zeros_u), dim=1),
+                             torch.stack((-sin_u, zeros_u, cos_u), dim=1)), dim=-1)
+        rot_x = torch.stack((torch.stack((ones_v, zeros_v, zeros_v), dim=1),
+                             torch.stack((zeros_v, cos_v, sin_v), dim=1),
+                             torch.stack((zeros_v, -sin_v, cos_v), dim=1)), dim=-1)
         rot = torch.matmul(rot_y, rot_x)
 
         # Rotate a forward vector by the rot matrices
-        vec = (torch.ones((sin_u.shape[0], 1)) * torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32)).unsqueeze(-1)
+        vec = (torch.ones((sin_u.shape[0], 1), device=device) *
+               torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32, device=device)).unsqueeze(-1)
         look = torch.matmul(rot, vec).squeeze(-1)
 
         # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
@@ -574,7 +580,7 @@ class SirenSampleRandomizePosition(object):
         tmax_index = torch.abs(tmax).argmin(1)
         tmax_out = torch.index_select(tmax, 1, tmax_index).diag() * self.scale
         # Randomly select a vector between the two intersection points, update pos to that
-        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
+        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape, device=device) + tmin_out
         # max_position = position + look * tmax_out.unsqueeze(1)
         # min_position = position + look * tmin_out.unsqueeze(1)
         new_position = position + look * t.unsqueeze(1)
