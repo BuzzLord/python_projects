@@ -518,25 +518,12 @@ class RandomSceneSirenFileList(Dataset):
 
         self.transform = transform
 
-    def _dataloader_worker(self, filename, dataloader_queue):
-        sampleset = RandomSceneSirenSampleSet(file_path=join(self.root_dir, filename),
-                                              pos_scale=self.pos_scale, transform=self.transform)
+    def generate_dataloader(self, file_list):
+        sampleset = RandomSceneSirenSampleSetList(file_list=[join(self.root_dir, f) for f in file_list],
+                                                  pos_scale=self.pos_scale, transform=self.transform)
         dataloader = torch.utils.data.DataLoader(sampleset, batch_size=self.batch_size, num_workers=self.num_workers,
                                                  pin_memory=self.pin_memory, shuffle=self.shuffle)
-        dataloader_queue.put(iter(dataloader))
-
-    def generate_dataloaders(self, file_list):
-        dataloader_queue = queue.Queue()
-        threads = [threading.Thread(target=self._dataloader_worker, args=(filename, dataloader_queue)) for filename in file_list]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        dataloaders = []
-        while not dataloader_queue.empty():
-            dataloaders.append(dataloader_queue.get())
-        return dataloaders
+        return dataloader
 
     def __len__(self):
         return len(self.file_names)
@@ -546,8 +533,16 @@ class RandomSceneSirenFileList(Dataset):
 
 
 class SirenSampleRandomizePosition(object):
+    def __init__(self, apply_transform=True, scale=1.0):
+        self.apply_transform = apply_transform
+        self.scale = scale
+
+    def set_scale(self, scale):
+        self.scale = scale
 
     def vector_transform(self, inputs):
+        if not self.apply_transform:
+            return inputs
         position = inputs[:, 0:3]
 
         # Take sin values for theta/phi look angle, get cos of them
@@ -566,8 +561,7 @@ class SirenSampleRandomizePosition(object):
         rot = torch.matmul(rot_y, rot_x)
 
         # Rotate a forward vector by the rot matrices
-        vec = (torch.ones((sin_u.shape[0], 1)) * torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32))
-        vec = torch.unsqueeze(vec, dim=-1)
+        vec = (torch.ones((sin_u.shape[0], 1)) * torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32)).unsqueeze(-1)
         look = torch.matmul(rot, vec).squeeze(-1)
 
         # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
@@ -575,10 +569,10 @@ class SirenSampleRandomizePosition(object):
         sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
         tmin = (sign - position) * inv_look
         tmin_index = torch.abs(tmin).argmin(1)
-        tmin_out = torch.index_select(tmin, 1, tmin_index).diag()
+        tmin_out = torch.index_select(tmin, 1, tmin_index).diag() * self.scale
         tmax = (-sign - position) * inv_look
         tmax_index = torch.abs(tmax).argmin(1)
-        tmax_out = torch.index_select(tmax, 1, tmax_index).diag()
+        tmax_out = torch.index_select(tmax, 1, tmax_index).diag() * self.scale
         # Randomly select a vector between the two intersection points, update pos to that
         t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
         # max_position = position + look * tmax_out.unsqueeze(1)
@@ -607,8 +601,7 @@ class SirenSampleRandomizePosition(object):
         rot = torch.matmul(rot_y, rot_x)
 
         # Rotate a forward vector by the rot matrices
-        vec = torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32)
-        vec = torch.unsqueeze(vec, dim=-1)
+        vec = torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32).unsqueeze(-1)
         look = torch.matmul(rot, vec).squeeze(-1)
 
         # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
@@ -616,10 +609,10 @@ class SirenSampleRandomizePosition(object):
         sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
         tmin = (sign - position) * inv_look
         tmin_index = torch.abs(tmin).argmin(0)
-        tmin_out = torch.index_select(tmin, 0, tmin_index)
+        tmin_out = torch.index_select(tmin, 0, tmin_index) * self.scale
         tmax = (-sign - position) * inv_look
         tmax_index = torch.abs(tmax).argmin(0)
-        tmax_out = torch.index_select(tmax, 0, tmax_index)
+        tmax_out = torch.index_select(tmax, 0, tmax_index) * self.scale
         # Randomly select a vector between the two intersection points, update pos to that
         t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
         # max_position = position + look * tmax_out.unsqueeze(1)
@@ -627,6 +620,76 @@ class SirenSampleRandomizePosition(object):
         new_position = position + look * t.unsqueeze(1)
         inputs[0:3] = new_position
         sample["inputs"] = inputs
+        return sample
+
+
+class RandomSceneSirenSampleSetList(Dataset):
+    """Random scene dataset. """
+
+    def __init__(self, file_list, pos_scale=None, transform=None):
+        """
+        Args:
+            file_list (list of strings): File list for the image to samples.
+            transform (callable, optional): Optional transform to be applied
+                on a sample.
+        """
+        if pos_scale is None:
+            pos_scale = [1.0, 1.0, 1.0]
+        self.file_list = file_list
+        logging.debug("Generating file samples from {} files ({}, ...)".format(len(file_list), file_list[0]))
+        self.image = []
+        self.inputs = []
+
+        for i, file_path in enumerate(file_list):
+            fg = match("ss([123])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", basename(file_path))
+
+            image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
+            image = np.clip((2.0 / 255.0) * image, 0.0, 2.0) - 1.0
+            image = image[:, :, 0:3][:, :, ::-1]
+            self.image.append(torch.from_numpy(image.copy()))
+
+            pos = torch.ones(image.shape, dtype=torch.float32)
+            pos[:,:,0].mul_(float(fg.group(3)) * pos_scale[0])
+            pos[:,:,1].mul_(float(fg.group(4)) * pos_scale[1])
+            pos[:,:,2].mul_(float(fg.group(5)) * pos_scale[2])
+
+            theta = torch.linspace(-1.0 + (1/float(image.shape[0])), 1.0 - (1/float(image.shape[0])), image.shape[0], dtype=torch.float32)
+            theta = (theta.unsqueeze(1) * torch.ones(image.shape[0])).transpose(dim0=0, dim1=1)
+            phi = torch.linspace(1.0 - (1/float(image.shape[1])), -1.0 + (1/float(image.shape[1])), image.shape[1], dtype=torch.float32)
+            phi = (phi.unsqueeze(1) * torch.ones(image.shape[1]))
+            inputs = torch.cat((pos, theta.unsqueeze(2), phi.unsqueeze(2)), dim=2)
+            self.inputs.append(inputs)
+
+        self.transform = transform
+
+    def _get_input(self, img, x, y):
+        return self.inputs[img][x, y]
+
+    def _get_output(self, img, x, y):
+        return self.image[img][x, y]
+
+    def get_in_order_sample(self, img=0):
+        return {"inputs": self.inputs[img].view(self.inputs[img].shape[0]*self.inputs[img].shape[1], 5),
+                "outputs": self.image[img].view(self.image[img].shape[0]*self.image[img].shape[1], 3)}
+
+    def __len__(self):
+        return sum([self.image[i].shape[0] * self.image[i].shape[1] for i in range(len(self.image))])
+
+    def __getitem__(self, idx):
+        img_idx = idx
+        img = 0
+        for _ in range(len(self.image)):
+            if img_idx < (self.image[img].shape[0]*self.image[img].shape[1]):
+                break
+            else:
+                img_idx -= (self.image[img].shape[0]*self.image[img].shape[1])
+                img += 1
+
+        ix = int(img_idx / self.image[img].shape[0])
+        iy = int(img_idx % self.image[img].shape[0])
+        sample = {"inputs": self._get_input(img, ix, iy), "outputs": self._get_output(img, ix, iy)}
+        if self.transform:
+            sample = self.transform(sample)
         return sample
 
 
@@ -697,50 +760,13 @@ class RandomSceneSirenSampleSet(Dataset):
 
 
 def main():
-    #sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,0.70710678,0],[0,0,0,0.70710678,0],
-    #                                               [0,-0.4330127,0.75,0,0.5],[0,0,0,0,0.5]], dtype=np.float32)),
-    #          "outputs": torch.from_numpy(np.zeros((2,3), dtype=np.float32))}
-    sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
-              "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
+    sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,0.70710678,0],[0,0,0,0.70710678,0],
+                                                   [0,-0.4330127,0.75,0,0.5],[0,0,0,0,0.5]], dtype=np.float32)),
+              "outputs": torch.from_numpy(np.zeros((2,3), dtype=np.float32))}
+    #single_sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
+    #                 "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
     transform = SirenSampleRandomizePosition()
-    transform(sample)
-
-
-def main_old2():
-    #sampleset = RandomSceneSirenSampleSet(file_path=join("screens3_512","ss3_335248_0.111_0.044_0.134_g.png"))
-    #dataloader = DataLoader(sampleset, batch_size=4, shuffle=True)
-    #for i_batch, sample_batched in enumerate(dataloader):
-    #    sample_inputs = sample_batched["inputs"]
-    #    sample_outputs = sample_batched["outputs"]
-
-    train_set = RandomSceneSirenFileList(root_dir="screens3_512", dataset_seed="335248", batch_size=256, num_workers=4,
-                                         shuffle=True, pos_scale=[1/4,1/3,1/3])
-    train_loader = DataLoader(train_set, batch_size=3, shuffle=True)
-    for image_idx, image_filename in enumerate(train_loader):
-        image_sample_loaders = train_set.generate_dataloaders(image_filename)
-
-        train_loss = [] if len(image_sample_loaders) > 1 else [0.0]
-        batch_idx = 0
-        total_batches = min([len(dl) for dl in image_sample_loaders])
-        data_loaders = [iter(dl) for dl in image_sample_loaders]
-        loader_select = list(range(len(data_loaders)))
-
-        while batch_idx < total_batches:
-            random.shuffle(loader_select)
-            samples = []
-            for i in loader_select:
-                try:
-                    samples.append(next(data_loaders[i]))
-                except StopIteration:
-                    logging.error("Tried to load from empty data_loader {}".format(i))
-            data_input = torch.cat([sample["inputs"] for sample in samples], 0)
-            data_output = torch.cat([sample["outputs"] for sample in samples], 0)
-            batch_idx += 1
-
-
-        #for i_batch, sample_batched in enumerate(dataloader):
-        #    sample_inputs = sample_batched["inputs"]
-        #    sample_outputs = sample_batched["outputs"]
+    transform.vector_transform(sample["inputs"])
 
 
 def main_old():

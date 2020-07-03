@@ -6,14 +6,12 @@ import argparse
 import logging
 import math
 from statistics import mean, stdev
-from random import shuffle
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision.utils import save_image
-from torchvision import transforms
 import dataloader as dl
 
 
@@ -45,15 +43,6 @@ class LinearActivation(nn.Module):
 
 
 class Siren(nn.Module):
-    #  Training regimes; all about the same number of parameters
-    # = (10*L*H) + (O*H) + (N-2)*H*H
-    # L:     10        10        10        10        10
-    # H:    512       384       256       192       128
-    # N:      4         6        10        16        34
-    # O:      3         3         3         3         3
-    #
-    #    577024    629376    550656    535872    537472
-
     def __init__(self, hidden_size=256, hidden_layers=5, pos_encoding_levels=4):
         super(Siren, self).__init__()
 
@@ -98,27 +87,16 @@ class Siren(nn.Module):
 def train(args, model, device, train_loader, criterion, optimizer, epoch):
     model.train()
     train_set = train_loader.dataset
-    transform = dl.SirenSampleRandomizePosition()
+    transform = dl.SirenSampleRandomizePosition(True, scale=min((epoch-1)/20, 1.0))
     for image_idx, image_filename in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics()
-        data_loaders = train_set.generate_dataloaders(image_filename)
-
-        batch_idx = 0
-        total_batches = min([len(loader) for loader in data_loaders])
-        loader_select = list(range(len(data_loaders)))
+        data_loader = train_set.generate_dataloader(image_filename)
 
         loss_data = []
-        while batch_idx < total_batches:
-            shuffle(loader_select)
-            samples = []
-            for i in loader_select:
-                try:
-                    samples.append(next(data_loaders[i]))
-                except StopIteration:
-                    logging.error("Tried to load from empty data_loader {}".format(i))
-            data_input = transform.vector_transform(torch.cat([sample["inputs"] for sample in samples], 0)).to(device, dtype=torch.float32)
-            data_actual = torch.cat([sample["outputs"] for sample in samples], 0).to(device, dtype=torch.float32)
+        for batch_idx, sample in enumerate(data_loader):
+            data_input = transform.vector_transform(sample["inputs"]).to(device, dtype=torch.float32)
+            data_actual = sample["outputs"].to(device, dtype=torch.float32)
 
             optimizer.zero_grad()
             data_output = model(data_input)
@@ -126,24 +104,24 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             loss.backward()
             optimizer.step()
             loss_data.append(loss.item())
-            batch_idx += 1
 
         if args.log_interval > 0:
-            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e})'.format(
-                epoch, image_idx+1, len(train_loader), 100. * (image_idx+1) / len(train_loader), mean(loss_data),
-                stdev(loss_data)))
             if image_idx % 10 == 0:
                 with torch.no_grad():
-                    saver_loader = dl.RandomSceneSirenSampleSet(join(train_set.root_dir, image_filename[0]),
-                                                                pos_scale=train_set.pos_scale)
-                    sample = saver_loader.get_in_order_sample()
+                    sample = data_loader.dataset.get_in_order_sample()
                     data_input = sample["inputs"].to(device, dtype=torch.float32)
                     data_output = model(data_input)
 
                     data_actual = convert_image(sample["outputs"])
                     data_output = convert_image(data_output.cpu())
                     images = torch.cat((data_actual, data_output), dim=3)
-                    save_image(images, join(args.model_path, "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))))
+                    save_image(images,
+                               join(args.model_path,
+                                    "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))),
+                               nrow=1)
+            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e})'.format(
+                epoch, image_idx + 1, len(train_loader), 100. * (image_idx + 1) / len(train_loader), mean(loss_data),
+                stdev(loss_data)))
 
 
 def test(args, model, device, test_loader, criterion, epoch):
@@ -152,25 +130,27 @@ def test(args, model, device, test_loader, criterion, epoch):
         test_set = test_loader.dataset
         test_loss = []
         for image_idx, image_filename in enumerate(test_loader):
-            data_loaders = test_set.generate_dataloaders(image_filename)
+            data_loader = test_set.generate_dataloader(image_filename)
 
-            batch_idx = 0
-            total_batches = min([len(loader) for loader in data_loaders])
-            loader_select = list(range(len(data_loaders)))
-
-            while batch_idx < total_batches:
-                samples = []
-                for i in loader_select:
-                    try:
-                        samples.append(next(data_loaders[i]))
-                    except StopIteration:
-                        logging.error("Tried to load from empty data_loader {}".format(i))
-                data_input = torch.cat([sample["inputs"] for sample in samples], 0).to(device, dtype=torch.float32)
-                data_actual = torch.cat([sample["outputs"] for sample in samples], 0).to(device, dtype=torch.float32)
+            for batch_idx, sample in enumerate(data_loader):
+                data_input = sample["inputs"].to(device, dtype=torch.float32)
+                data_actual = sample["outputs"].to(device, dtype=torch.float32)
 
                 data_output = model(data_input)
                 test_loss.append(criterion(data_output, data_actual).item())
-                batch_idx += 1
+
+            if image_idx % int(len(test_loader)/6) == 0:
+                sample = data_loader.dataset.get_in_order_sample()
+                data_input = sample["inputs"].to(device, dtype=torch.float32)
+                data_output = model(data_input)
+
+                sample_actual = convert_image(sample["outputs"])
+                sample_output = convert_image(data_output.cpu())
+                images = torch.cat((sample_actual, sample_output), dim=3)
+                save_image(images,
+                           join(args.model_path,
+                                "test{:02d}-{:02d}.png".format(epoch, int(image_idx/int(len(test_loader)/6)))),
+                           nrow=1)
 
             if len(test_loss) > 1:
                 loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
@@ -178,27 +158,9 @@ def test(args, model, device, test_loader, criterion, epoch):
                 loss_value = "{:.3e}".format(test_loss[0])
             logging.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
 
-            if image_idx % int(len(test_loader)/6) == 0:
-                saver_loader = dl.RandomSceneSirenSampleSet(join(test_set.root_dir, image_filename[0]),
-                                                            pos_scale=test_set.pos_scale)
-                sample = saver_loader.get_in_order_sample()
-                data_input = sample["inputs"].to(device, dtype=torch.float32)
-                data_output = model(data_input)
-
-                data_actual = convert_image(sample["outputs"])
-                data_output = convert_image(data_output.cpu())
-                images = torch.cat((data_actual, data_output), dim=3)
-                save_image(images, join(args.model_path, "test{:02d}-{:02d}.png".format(epoch, int(image_idx/int(len(test_loader)/6)))))
-
-        if len(test_loss) > 1:
-            loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
-        else:
-            loss_value = "{:.3e}".format(test_loss[0])
-        logging.info('Test set final loss: {}'.format(loss_value))
-
 
 def convert_image(data):
-    converted = data.transpose(dim0=0, dim1=1).view((1, 3, 512, 512)).transpose(dim0=2, dim1=3)
+    converted = data.transpose(dim0=0, dim1=1).view((1, 3, 512, 512))
     converted = ((converted * 0.5) + 0.5).clamp(0, 1)
     return converted
 
@@ -207,10 +169,10 @@ def main(custom_args=None):
     # Training settings
     model_number = "01"
     parser = argparse.ArgumentParser(description='PyTorch SIREN Model ' + model_number + ' Experiment')
-    parser.add_argument('--batch-size', type=int, default=512, metavar='N',
-                        help='input batch size for training (default: 512)')
-    parser.add_argument('--test-batch-size', type=int, default=512, metavar='N',
-                        help='input batch size for testing (default: 512)')
+    parser.add_argument('--batch-size', type=int, default=2048, metavar='N',
+                        help='input batch size for training (default: 2048)')
+    parser.add_argument('--test-batch-size', type=int, metavar='N',
+                        help='input batch size for testing (default: batch-size)')
     parser.add_argument('--epochs', type=int, default=20, metavar='N',
                         help='number of epochs to train (default: 20)')
     parser.add_argument('--epoch-start', type=int, default=1, metavar='N',
@@ -306,6 +268,7 @@ def main(custom_args=None):
     criterion = ModelLoss(device=device)
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
+        logging.info("Starting epoch {} with LR {:.3e}".format(epoch, scheduler.get_last_lr()[0]))
         train(args, model, device, train_loader, criterion, optimizer, epoch)
         test(args, model, device, test_loader, criterion, epoch)
         torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
@@ -320,8 +283,9 @@ def get_data_loaders(args, kwargs):
                                             pos_scale=position_scale)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=4, shuffle=True)
 
+    test_batch_size = args.test_batch_size if args.test_batch_size is not None else args.batch_size
     test_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=True,
-                                           batch_size=args.test_batch_size, num_workers=4, pin_memory=False,
+                                           batch_size=test_batch_size, num_workers=4, pin_memory=True,
                                            shuffle=False, pos_scale=position_scale)
     test_loader = torch.utils.data.DataLoader(test_set, batch_size=4, shuffle=False)
 
