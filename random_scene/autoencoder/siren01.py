@@ -117,7 +117,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                     samples.append(next(data_loaders[i]))
                 except StopIteration:
                     logging.error("Tried to load from empty data_loader {}".format(i))
-            data_input = torch.cat([transform.vector_transform(sample["inputs"]) for sample in samples], 0).to(device, dtype=torch.float32)
+            data_input = transform.vector_transform(torch.cat([sample["inputs"] for sample in samples], 0)).to(device, dtype=torch.float32)
             data_actual = torch.cat([sample["outputs"] for sample in samples], 0).to(device, dtype=torch.float32)
 
             optimizer.zero_grad()
