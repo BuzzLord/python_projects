@@ -49,6 +49,8 @@ class RenderSiren:
 
         self.siren = siren
         self.device = device
+        self.view_dx = None
+        self.view_dy = None
 
         self.screen_space_quad = None
         self.ssq_tex = None
@@ -78,10 +80,8 @@ class RenderSiren:
         self.last_time = glutGet(GLUT_ELAPSED_TIME)
         glClearColor(0.5, 0.5, 0.5, 1.0)
 
-        # Should already be set to eval, but disable gradients
         self.siren.eval()
-        torch.no_grad()
-
+        self.__setup_view_vectors()
         self.__setup_render_textures()
 
     def __setup_render_textures(self):
@@ -93,24 +93,43 @@ class RenderSiren:
         self.screen_space_quad.add_oriented_quad((1.0, 1.0, 0.5), (0.0, 0.0, 0.5))
         self.screen_space_quad.allocate_buffers()
 
+    def __setup_view_vectors(self):
+        dx = torch.linspace(0.0 + 1/self.window_size[0], (2.0 - 1/self.window_size[0]) * self.aspect, steps=self.window_size[0])
+        dx = dx.unsqueeze(1) * torch.ones((1, self.window_size[1]))
+        self.view_dx = dx.reshape((self.window_size[0] * self.window_size[1], 1)).to(self.device, dtype=torch.float32)
+        dy = torch.linspace(0.0 + 1/self.window_size[1], 2.0 - 1/self.window_size[1], steps=self.window_size[1])
+        dy = dy.unsqueeze(1) * torch.ones((1, self.window_size[0]))
+        dy = dy.transpose(dim0=0, dim1=1)
+        self.view_dy = dy.reshape((self.window_size[0] * self.window_size[1], 1)).to(self.device, dtype=torch.float32)
+
     def __generate_view(self):
-        roll_pitch_yaw = np.dot(roty(self.camera_yaw), rotx(self.camera_pitch))
-        final_up = transform(roll_pitch_yaw, np.array([0.0, 1.0, 0.0, 0.0], dtype='float32'))
-        final_forward = transform(roll_pitch_yaw, np.array([0.0, 0.0, -1.0, 0.0], dtype='float32'))
+        with torch.no_grad():
+            roll_pitch_yaw = np.dot(roty(self.camera_yaw), rotx(self.camera_pitch))
+            final_up = torch.from_numpy(transform(roll_pitch_yaw, np.array([0.0, 1.0, 0.0, 0.0], dtype=np.float32))[0:3]).to(self.device, dtype=torch.float32)
+            final_forward = torch.from_numpy(transform(roll_pitch_yaw, np.array([0.0, 0.0, -1.0, 0.0], dtype=np.float32))[0:3]).to(self.device, dtype=torch.float32)
+            final_left = torch.cross(final_up, final_forward)
+            top_left = final_forward * (self.aspect/math.tan(math.radians(self.fov/2))) + final_left * self.aspect + final_up
+            dx = self.view_dx * (-final_left.unsqueeze(0))
+            dx = dx.view((self.window_size[0], self.window_size[1], 3))
+            dy = self.view_dy * (-final_up.unsqueeze(0))
+            dy = dy.view((self.window_size[0], self.window_size[1], 3))
+            view_vectors = dx + dy
+            view_vectors = view_vectors + top_left
+            view_norm = torch.norm(view_vectors, dim=2)
+            view_vectors = view_vectors / view_norm.unsqueeze(2)
+            theta = (torch.atan2(view_vectors[:,:,0],-view_vectors[:,:,2]).unsqueeze(2)) / (math.pi/2)
+            phi = (math.pi/2 - torch.acos(view_vectors[:,:,1]).unsqueeze(2)) / (math.pi/2)
+            xyz = torch.ones((self.window_size[0], self.window_size[1], 1), device=self.device, dtype=torch.float32) * torch.from_numpy(self.camera_position[0:3]).unsqueeze(0).to(self.device, dtype=torch.float32)
+            view_input = torch.cat((xyz, theta, phi), dim=2).view((self.window_size[0]*self.window_size[1], 5))
 
-        theta = np.linspace(-0.7, 0.7, self.window_size[0]) * np.ones((self.window_size[1], 1)) + self.camera_yaw
-        phi = (np.linspace(-0.7, 0.7, self.window_size[1]) * np.ones((self.window_size[0], 1))).transpose() - self.camera_pitch
-        xyz = np.zeros((self.window_size[0],self.window_size[1],3)) + self.camera_position[0:3]
+            view_output = self.siren(view_input)
+            # view_output = torch.cat((theta, phi, torch.zeros(theta.shape, device=self.device)), dim=2)
 
-        np_input = np.concatenate((xyz, phi.reshape(self.window_size[0],self.window_size[1],1),
-                                   theta.reshape(self.window_size[0],self.window_size[1],1)), axis=2)
-        view_input = torch.from_numpy(np_input).view((self.window_size[0]*self.window_size[1],5)).to(self.device, dtype=torch.float32)
-        view_output = self.siren(view_input).cpu().data
-        view_output = ((view_output * 0.5) + 0.5).clamp(0, 1).view((self.window_size[0],self.window_size[1],3))
-        view_output = np.concatenate((np.array(view_output.numpy(), dtype=np.float32),
-                                      np.ones((self.window_size[0],self.window_size[1], 1), dtype=np.float32)), axis=2)
-        view_output = np.array(view_output * 255.0, np.uint8)
-        self.ssq_tex.copy_data(view_output, bind=True)
+            view_output = ((view_output.data * 0.5) + 0.5).clamp(0, 1).view((self.window_size[0],self.window_size[1],3))
+            view_output = torch.cat((view_output, torch.ones((self.window_size[0],self.window_size[1], 1), device=self.device, dtype=torch.float32)), dim=2)
+            view_output = view_output.cpu()
+            view_output = np.transpose(np.array(view_output * 255.0, np.uint8), (1, 0, 2))[:,::-1,:]
+            self.ssq_tex.copy_data(view_output, bind=True)
 
     def __render_loop(self):
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
@@ -126,6 +145,13 @@ class RenderSiren:
         self.__generate_view()
         glutPostRedisplay()
 
+    def __print_position(self):
+        logging.info("Position: [{:.3f},{:.3f},{:.3f}] [{:.1f},{:.1f}]".format(self.camera_position[0],
+                                                                               self.camera_position[1],
+                                                                               self.camera_position[2],
+                                                                               self.camera_yaw,
+                                                                               self.camera_pitch))
+
     def __keyboard_func(self, key, x, y):
         # print("Keyboard func saw: " + str(key))
         speed = 0.05
@@ -135,55 +161,63 @@ class RenderSiren:
             dir = np.array(
                 [np.sin(np.deg2rad(self.camera_yaw - 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw - 90.0)), 0.0])
             self.camera_position += speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b'd':
             dir = np.array(
                 [np.sin(np.deg2rad(self.camera_yaw + 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw + 90.0)), 0.0])
             self.camera_position += speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b'w':
             dir = np.array([-np.sin(np.deg2rad(self.camera_yaw)), 0.0, -np.cos(np.deg2rad(self.camera_yaw)), 0.0])
             self.camera_position += speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b's':
             dir = np.array([np.sin(np.deg2rad(self.camera_yaw)), 0.0, np.cos(np.deg2rad(self.camera_yaw)), 0.0])
             self.camera_position += speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b'A':
             dir = np.array(
                 [np.sin(np.deg2rad(self.camera_yaw - 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw - 90.0)), 0.0])
             self.camera_position += 4.0 * speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b'D':
             dir = np.array(
                 [np.sin(np.deg2rad(self.camera_yaw + 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw + 90.0)), 0.0])
             self.camera_position += 4.0 * speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b'W':
             dir = np.array([-np.sin(np.deg2rad(self.camera_yaw)), 0.0, -np.cos(np.deg2rad(self.camera_yaw)), 0.0])
             self.camera_position += 4.0 * speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
         elif key == b'S':
             dir = np.array([np.sin(np.deg2rad(self.camera_yaw)), 0.0, np.cos(np.deg2rad(self.camera_yaw)), 0.0])
             self.camera_position += 4.0 * speed * dir
-            logging.info("Position: {}".format(self.camera_position))
+            self.__print_position()
 
     def __special_func(self, key, x, y):
         states = glutGetModifiers()
         if states & GLUT_ACTIVE_SHIFT:
-            d = 0.05
+            d = 5.0
         else:
-            d = 0.01
+            d = 1.0
 
         #  print("Special func saw: " + str(key))
         if key == GLUT_KEY_LEFT:
-            self.camera_yaw = (self.camera_yaw + d) % 360.0
+            self.camera_yaw = (self.camera_yaw + d)
+            if self.camera_yaw < -180.0:
+                self.camera_yaw += 360.0
+            self.__print_position()
         elif key == GLUT_KEY_RIGHT:
-            self.camera_yaw = (self.camera_yaw - d) % 360.0
+            self.camera_yaw = (self.camera_yaw - d)
+            if self.camera_yaw > 180.0:
+                self.camera_yaw -= 360.0
+            self.__print_position()
         elif key == GLUT_KEY_UP:
             self.camera_pitch = min(self.camera_pitch + d, 90.0)
+            self.__print_position()
         elif key == GLUT_KEY_DOWN:
             self.camera_pitch = max(self.camera_pitch - d, -90.0)
+            self.__print_position()
 
     @staticmethod
     def start():
