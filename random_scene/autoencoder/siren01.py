@@ -87,7 +87,8 @@ class Siren(nn.Module):
 def train(args, model, device, train_loader, criterion, optimizer, epoch):
     model.train()
     train_set = train_loader.dataset
-    transform = dl.SirenSampleRandomizePosition(True, scale=min((epoch-1)/20, 1.0))
+    transform = dl.SirenSampleRandomizePosition(args.random_position,
+                                                max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
     for image_idx, image_filename in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics()
@@ -190,6 +191,13 @@ def main(custom_args=None):
     parser.add_argument('--schedule-gamma', type=float, default=0.1, metavar='G',
                         help='Schedule gamma factor for LR decay (default: 0.1)')
 
+    parser.add_argument('--random-position', action='store_true', default=False,
+                        help='Randomize position along view ray during training')
+    parser.add_argument('--random-steps', type=int, default=5, metavar='S',
+                        help='Randomize position number of steps to max_t (default: 5)')
+    parser.add_argument('--random-max-t', type=float, default=0.5, metavar='T',
+                        help='Randomize position max t (default: 0.5)')
+
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
     parser.add_argument('--seed', type=int, default=1, metavar='S',
@@ -235,6 +243,7 @@ def main(custom_args=None):
         root_logger.addHandler(file_handler)
 
     logging.info("\n*** Starting Siren Model {}".format(model_number))
+    logging.info("Arguments: {}".format(args))
     use_cuda = not args.no_cuda and torch.cuda.is_available()
 
     logging.info("Using random seed " + str(args.seed))

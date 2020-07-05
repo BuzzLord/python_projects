@@ -533,17 +533,18 @@ class RandomSceneSirenFileList(Dataset):
 
 
 class SirenSampleRandomizePosition(object):
-    def __init__(self, apply_transform=True, scale=1.0):
+    def __init__(self, apply_transform=True, max_t=1.0):
         self.apply_transform = apply_transform
-        self.scale = scale
+        self.max_t = max_t
 
-    def set_scale(self, scale):
-        self.scale = scale
+    def set_max_t(self, max_t):
+        self.max_t = max_t
 
-    def vector_transform(self, inputs):
+    def vector_transform(self, inputs, device=None):
         if not self.apply_transform:
             return inputs
-        device = inputs.get_device()
+        if device is None:
+            device = inputs.device
         position = inputs[:, 0:3]
 
         # Take sin values for theta/phi look angle, get cos of them
@@ -575,10 +576,11 @@ class SirenSampleRandomizePosition(object):
         sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
         tmin = (sign - position) * inv_look
         tmin_index = torch.abs(tmin).argmin(1)
-        tmin_out = torch.index_select(tmin, 1, tmin_index).diag() * self.scale
+        tmin_out = torch.clamp(torch.index_select(tmin, 1, tmin_index).diag(), -self.max_t, 0)
         tmax = (-sign - position) * inv_look
         tmax_index = torch.abs(tmax).argmin(1)
-        tmax_out = torch.index_select(tmax, 1, tmax_index).diag() * self.scale
+        tmax_out = torch.clamp(torch.index_select(tmax, 1, tmax_index).diag(), 0, self.max_t)
+
         # Randomly select a vector between the two intersection points, update pos to that
         t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape, device=device) + tmin_out
         # max_position = position + look * tmax_out.unsqueeze(1)
@@ -659,9 +661,11 @@ class RandomSceneSirenSampleSetList(Dataset):
             pos[:,:,1].mul_(float(fg.group(4)) * pos_scale[1])
             pos[:,:,2].mul_(float(fg.group(5)) * pos_scale[2])
 
-            theta = torch.linspace(-1.0 + (1/float(image.shape[0])), 1.0 - (1/float(image.shape[0])), image.shape[0], dtype=torch.float32)
+            theta = torch.linspace(-1.0 + (1/float(image.shape[0])),
+                                   1.0 - (1/float(image.shape[0])), image.shape[0], dtype=torch.float32)
             theta = (theta.unsqueeze(1) * torch.ones(image.shape[0])).transpose(dim0=0, dim1=1)
-            phi = torch.linspace(1.0 - (1/float(image.shape[1])), -1.0 + (1/float(image.shape[1])), image.shape[1], dtype=torch.float32)
+            phi = torch.linspace(1.0 - (1/float(image.shape[1])),
+                                 -1.0 + (1/float(image.shape[1])), image.shape[1], dtype=torch.float32)
             phi = (phi.unsqueeze(1) * torch.ones(image.shape[1]))
             inputs = torch.cat((pos, theta.unsqueeze(2), phi.unsqueeze(2)), dim=2)
             self.inputs.append(inputs)
@@ -694,72 +698,6 @@ class RandomSceneSirenSampleSetList(Dataset):
         ix = int(img_idx / self.image[img].shape[0])
         iy = int(img_idx % self.image[img].shape[0])
         sample = {"inputs": self._get_input(img, ix, iy), "outputs": self._get_output(img, ix, iy)}
-        if self.transform:
-            sample = self.transform(sample)
-        return sample
-
-
-class RandomSceneSirenSampleSet(Dataset):
-    """Random scene dataset. """
-
-    def __init__(self, file_path, pos_scale=None, transform=None):
-        """
-        Args:
-            file_path (string): File for the image to sample.
-            transform (callable, optional): Optional transform to be applied
-                on a sample.
-        """
-        if pos_scale is None:
-            pos_scale = [1.0, 1.0, 1.0]
-        self.file_path = file_path
-        logging.debug("Generating file samples from {}".format(file_path))
-
-        fg = match("ss([123])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", basename(file_path))
-        self.x = float(fg.group(3)) * pos_scale[0]
-        self.y = float(fg.group(4)) * pos_scale[1]
-        self.z = float(fg.group(5)) * pos_scale[2]
-
-        self.image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
-        self.image = np.clip((2.0 / 255.0) * self.image, 0.0, 2.0) - 1.0
-        self.image = self.image[:, :, 0:3][:, :, ::-1]
-        self.width = self.image.shape[0]
-        self.height = self.image.shape[1]
-        self.half_width = float(self.width) / 2.0
-        self.half_height = float(self.height) / 2.0
-        self.transform = transform
-
-    def _get_input(self, x, y):
-        theta = ((float(x)+0.5) - self.half_width) / self.half_width
-        phi = (self.half_height - (float(y)+0.5)) / self.half_height
-        input_vector = torch.tensor([self.x, self.y, self.z, theta, phi], dtype=torch.float32)
-        return input_vector
-
-    def _get_output(self, x, y):
-        image_sample = self.image[x, y]
-        output_vector = torch.tensor([image_sample[0], image_sample[1], image_sample[2]], dtype=torch.float32)
-        return output_vector
-
-    def get_in_order_sample(self):
-        inputs = []
-        outputs = []
-        for y in range(self.height):
-            for x in range(self.width):
-                s = {"inputs": self._get_input(x, y), "outputs": self._get_output(x, y)}
-                if self.transform:
-                    s = self.transform(s)
-                inputs.append(s["inputs"])
-                outputs.append(s["outputs"])
-        sample = {"inputs": torch.stack(inputs, 0), "outputs": torch.stack(outputs, 0)}
-        return sample
-
-    def __len__(self):
-        return self.width * self.height
-
-    def __getitem__(self, idx):
-        #print("Sample {} from {}".format(idx, self.file_path))
-        ix = int(idx / self.width)
-        iy = int(idx % self.width)
-        sample = {"inputs": self._get_input(ix, iy), "outputs": self._get_output(ix, iy)}
         if self.transform:
             sample = self.transform(sample)
         return sample
