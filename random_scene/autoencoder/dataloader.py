@@ -496,14 +496,14 @@ class RandomSceneSirenFileList(Dataset):
         logging.info("Found " + str(len(file_list)) + " files. Collating filenames into list.")
         all_file_names = []
         for f in file_list:
-            fg = match("ss([123])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", f)
+            fg = match("ss([34])_([0-9]*)_.*.png", f)
             seed = fg.group(2)
             if seed != dataset_seed:
                 continue
 
             version = fg.group(1)
-            if version not in ["3"]:
-                logging.error("Skipping file, version != 3: " + f)
+            if version not in ["3", "4"]:
+                logging.error("Skipping file, version not in [3,4]: " + f)
                 continue
 
             all_file_names.append(f)
@@ -649,7 +649,18 @@ class RandomSceneSirenSampleSetList(Dataset):
         self.inputs = []
 
         for i, file_path in enumerate(file_list):
-            fg = match("ss([123])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", basename(file_path))
+            vg = match("ss([1234])_([0-9]*)_.*.png", basename(file_path))
+            if vg.group(1) == "3":
+                fg = match("ss([1234])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png", basename(file_path))
+                pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
+                rot_group = (0.0, 0.0)
+            elif vg.group(1) == "4":
+                fg = match("ss([1234])_([0-9]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([lrg]).png", basename(file_path))
+                pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
+                rot_group = (float(fg.group(6)), float(fg.group(7)))
+            else:
+                logging.error("Invalid version {}".format(vg.group(1)))
+                continue
 
             image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
             image = np.clip((2.0 / 255.0) * image, 0.0, 2.0) - 1.0
@@ -657,15 +668,17 @@ class RandomSceneSirenSampleSetList(Dataset):
             self.image.append(torch.from_numpy(image.copy()))
 
             pos = torch.ones(image.shape, dtype=torch.float32)
-            pos[:,:,0].mul_(float(fg.group(3)) * pos_scale[0])
-            pos[:,:,1].mul_(float(fg.group(4)) * pos_scale[1])
-            pos[:,:,2].mul_(float(fg.group(5)) * pos_scale[2])
+            pos[:,:,0].mul_(pos_group[0] * pos_scale[0])
+            pos[:,:,1].mul_(pos_group[1] * pos_scale[1])
+            pos[:,:,2].mul_(pos_group[2] * pos_scale[2])
 
             theta = torch.linspace(-1.0 + (1/float(image.shape[0])),
                                    1.0 - (1/float(image.shape[0])), image.shape[0], dtype=torch.float32)
+            theta = np.sin(np.arcsin(theta) + np.deg2rad(rot_group[0]))
             theta = (theta.unsqueeze(1) * torch.ones(image.shape[0])).transpose(dim0=0, dim1=1)
             phi = torch.linspace(1.0 - (1/float(image.shape[1])),
                                  -1.0 + (1/float(image.shape[1])), image.shape[1], dtype=torch.float32)
+            phi = np.sin(np.arcsin(phi) + np.deg2rad(rot_group[1]))
             phi = (phi.unsqueeze(1) * torch.ones(image.shape[1]))
             inputs = torch.cat((pos, theta.unsqueeze(2), phi.unsqueeze(2)), dim=2)
             self.inputs.append(inputs)
