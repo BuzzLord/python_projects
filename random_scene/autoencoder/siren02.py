@@ -198,8 +198,8 @@ def main(custom_args=None):
                         help='Weight decay (default: 0.)')
     parser.add_argument('--schedule-step-size', type=int, default=4, metavar='S',
                         help='Schedule step size for LR decay (default: 4)')
-    parser.add_argument('--schedule-gamma', type=float, default=0.1, metavar='G',
-                        help='Schedule gamma factor for LR decay (default: 0.1)')
+    parser.add_argument('--schedule-gamma', type=float, default=1.0, metavar='G',
+                        help='Schedule gamma factor for LR decay (default: 1.0)')
     parser.add_argument('--dropout', type=float, metavar='DROPOUT',
                         help='Dropout rate for each linear layer (except last)')
 
