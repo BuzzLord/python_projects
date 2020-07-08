@@ -43,7 +43,7 @@ class LinearActivation(nn.Module):
 
 
 class Siren(nn.Module):
-    def __init__(self, hidden_size=256, hidden_layers=5, pos_encoding_levels=4):
+    def __init__(self, hidden_size=256, hidden_layers=5, pos_encoding_levels=4, dropout=None):
         super(Siren, self).__init__()
 
         self.pos_encoding_levels = pos_encoding_levels
@@ -53,22 +53,25 @@ class Siren(nn.Module):
 
         self.w0_initial = 30.0
         self.hidden_layers = hidden_layers
-        self.network = self.make_network(hidden_layers, hidden_size, input_size, output_size)
+        self.network = self.make_network(hidden_layers, hidden_size, input_size, output_size, dropout)
 
     @staticmethod
-    def construct_layer(in_size, out_size, activation=None, c=6.0, w0=1.0):
-        layers = OrderedDict([("linear", nn.Linear(in_size, out_size)),
-                              ("activation", Sine(w0) if activation is None else activation)])
+    def construct_layer(in_size, out_size, activation=None, c=6.0, w0=1.0, dropout=None):
+        layers = OrderedDict([("linear", nn.Linear(in_size, out_size))])
+        if dropout is not None:
+            layers["dropout"] = nn.Dropout(p=dropout)
+        layers["activation"] = Sine(w0) if activation is None else activation
+
         std = math.sqrt(1 / in_size)
         c_std = math.sqrt(c) * std / w0
         layers["linear"].weight.data.uniform_(-c_std, c_std)
         layers["linear"].bias.data.uniform_(-std, std)
         return layers
 
-    def make_network(self, hidden_layers, hidden_size, input_size, output_size):
-        layers = [nn.Sequential(self.construct_layer(input_size, hidden_size, w0=self.w0_initial))]
+    def make_network(self, hidden_layers, hidden_size, input_size, output_size, dropout):
+        layers = [nn.Sequential(self.construct_layer(input_size, hidden_size, w0=self.w0_initial, dropout=dropout))]
         for i in range(2, hidden_layers):
-            layers.append(nn.Sequential(self.construct_layer(hidden_size, hidden_size)))
+            layers.append(nn.Sequential(self.construct_layer(hidden_size, hidden_size, dropout=dropout)))
         layers.append(nn.Sequential(self.construct_layer(hidden_size, output_size, activation=LinearActivation())))
         return nn.Sequential(OrderedDict([("layer{:d}".format(i + 1), layer) for i, layer in enumerate(layers)]))
 
@@ -190,6 +193,8 @@ def main(custom_args=None):
                         help='Schedule step size for LR decay (default: 4)')
     parser.add_argument('--schedule-gamma', type=float, default=0.1, metavar='G',
                         help='Schedule gamma factor for LR decay (default: 0.1)')
+    parser.add_argument('--dropout', type=float, metavar='DROPOUT',
+                        help='Dropout rate for each linear layer (except last)')
 
     parser.add_argument('--random-position', action='store_true', default=False,
                         help='Randomize position along view ray during training')
@@ -257,7 +262,8 @@ def main(custom_args=None):
 
     logging.info("Siren configured with pos_encoding = {}, hidden_size = {}, hidden_layers = {}".format(
         args.pos_encoding, args.hidden_size, args.hidden_layers))
-    model = Siren(hidden_size=args.hidden_size, hidden_layers=args.hidden_layers, pos_encoding_levels=args.pos_encoding)
+    model = Siren(hidden_size=args.hidden_size, hidden_layers=args.hidden_layers, pos_encoding_levels=args.pos_encoding,
+                  dropout=args.dropout)
     if len(args.load_model_state) > 0:
         model_path = os.path.join(args.model_path, args.load_model_state)
         if os.path.exists(model_path):
