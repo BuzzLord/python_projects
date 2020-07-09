@@ -548,10 +548,10 @@ class SirenSampleRandomizePosition(object):
         position = inputs[:, 0:3]
 
         # Take sin values for theta/phi look angle, get cos of them
-        sin_u = inputs[:, 3]
-        sin_v = inputs[:, 4]
-        cos_u = torch.cos(torch.asin(sin_u))
-        cos_v = torch.cos(torch.asin(sin_v))
+        u = 0.5 * np.pi * inputs[:, 3]
+        v = 0.5 * np.pi * inputs[:, 4]
+        sin_u, cos_u = torch.sin(u), torch.cos(u)
+        sin_v, cos_v = torch.sin(v), torch.cos(v)
 
         # Construct rotation matrices
         zeros_u = torch.zeros(sin_u.shape, device=device)
@@ -594,10 +594,10 @@ class SirenSampleRandomizePosition(object):
         position = inputs[0:3]
 
         # Take sin values for theta/phi look angle, get cos of them
-        sin_u = inputs[3]
-        sin_v = inputs[4]
-        cos_u = torch.cos(torch.asin(sin_u))
-        cos_v = torch.cos(torch.asin(sin_v))
+        u = 0.5 * np.pi * inputs[3]
+        v = 0.5 * np.pi * inputs[4]
+        sin_u, cos_u = torch.sin(u), torch.cos(u)
+        sin_v, cos_v = torch.sin(v), torch.cos(v)
 
         # Construct rotation matrices
         rot_y = torch.tensor([[cos_u, 0, sin_u],
@@ -617,10 +617,10 @@ class SirenSampleRandomizePosition(object):
         sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
         tmin = (sign - position) * inv_look
         tmin_index = torch.abs(tmin).argmin(0)
-        tmin_out = torch.index_select(tmin, 0, tmin_index) * self.scale
+        tmin_out = torch.clamp(torch.index_select(tmin, 0, tmin_index), -self.max_t, 0)
         tmax = (-sign - position) * inv_look
         tmax_index = torch.abs(tmax).argmin(0)
-        tmax_out = torch.index_select(tmax, 0, tmax_index) * self.scale
+        tmax_out = torch.clamp(torch.index_select(tmax, 0, tmax_index), 0, self.max_t)
         # Randomly select a vector between the two intersection points, update pos to that
         t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
         # max_position = position + look * tmax_out.unsqueeze(1)
@@ -674,11 +674,11 @@ class RandomSceneSirenSampleSetList(Dataset):
 
             theta = torch.linspace(-1.0 + (1/float(image.shape[0])),
                                    1.0 - (1/float(image.shape[0])), image.shape[0], dtype=torch.float32)
-            theta = np.sin(np.arcsin(theta) + np.deg2rad(rot_group[0]))
+            theta = theta + rot_group[0] / 90
             theta = (theta.unsqueeze(1) * torch.ones(image.shape[0])).transpose(dim0=0, dim1=1)
             phi = torch.linspace(1.0 - (1/float(image.shape[1])),
                                  -1.0 + (1/float(image.shape[1])), image.shape[1], dtype=torch.float32)
-            phi = np.sin(np.arcsin(phi) + np.deg2rad(rot_group[1]))
+            phi = phi + rot_group[1] / 90
             phi = (phi.unsqueeze(1) * torch.ones(image.shape[1]))
             inputs = torch.cat((pos, theta.unsqueeze(2), phi.unsqueeze(2)), dim=2)
             self.inputs.append(inputs)
@@ -717,12 +717,15 @@ class RandomSceneSirenSampleSetList(Dataset):
 
 
 def main():
-    sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,0.70710678,0],[0,0,0,0.70710678,0],
-                                                   [0,-0.4330127,0.75,0,0.5],[0,0,0,0,0.5]], dtype=np.float32)),
+    def deg2norm(angle):
+        return angle / 90
+
+    sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,deg2norm(45),0],[0,0,0,deg2norm(45),0],
+                                                   [0,-0.4330127,0.75,0,deg2norm(30)],[0,0,0,0,deg2norm(30)]], dtype=np.float32)),
               "outputs": torch.from_numpy(np.zeros((2,3), dtype=np.float32))}
     #single_sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
     #                 "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
-    transform = SirenSampleRandomizePosition()
+    transform = SirenSampleRandomizePosition(max_t=10.0)
     transform.vector_transform(sample["inputs"])
 
 
