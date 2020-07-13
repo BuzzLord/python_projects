@@ -647,6 +647,7 @@ class RandomSceneSirenSampleSetList(Dataset):
         logging.debug("Generating file samples from {} files ({}, ...)".format(len(file_list), file_list[0]))
         self.image = []
         self.inputs = []
+        self.dims = []
 
         for i, file_path in enumerate(file_list):
             vg = match("ss([1234])_([0-9]*)_.*.png", basename(file_path))
@@ -666,6 +667,7 @@ class RandomSceneSirenSampleSetList(Dataset):
             image = np.clip((2.0 / 255.0) * image, 0.0, 2.0) - 1.0
             image = image[:, :, 0:3][:, :, ::-1]
             self.image.append(torch.from_numpy(image.copy()))
+            self.dims.append((image.shape[0], image.shape[1]))
 
             pos = torch.ones(image.shape, dtype=torch.float32)
             pos[:,:,0].mul_(pos_group[0] * pos_scale[0])
@@ -693,7 +695,8 @@ class RandomSceneSirenSampleSetList(Dataset):
 
     def get_in_order_sample(self, img=0):
         return {"inputs": self.inputs[img].view(self.inputs[img].shape[0]*self.inputs[img].shape[1], 5),
-                "outputs": self.image[img].view(self.image[img].shape[0]*self.image[img].shape[1], 3)}
+                "outputs": self.image[img].view(self.image[img].shape[0]*self.image[img].shape[1], 3),
+                "dims": self.dims[img]}
 
     def __len__(self):
         return sum([self.image[i].shape[0] * self.image[i].shape[1] for i in range(len(self.image))])
@@ -710,7 +713,7 @@ class RandomSceneSirenSampleSetList(Dataset):
 
         ix = int(img_idx / self.image[img].shape[0])
         iy = int(img_idx % self.image[img].shape[0])
-        sample = {"inputs": self._get_input(img, ix, iy), "outputs": self._get_output(img, ix, iy)}
+        sample = {"inputs": self._get_input(img, ix, iy), "outputs": self._get_output(img, ix, iy), "dims": self.dims[img]}
         if self.transform:
             sample = self.transform(sample)
         return sample

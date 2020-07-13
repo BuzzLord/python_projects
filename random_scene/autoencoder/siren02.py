@@ -123,8 +123,8 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                     data_input = sample["inputs"].to(device, dtype=torch.float32)
                     data_output = model(data_input)
 
-                    data_actual = convert_image(sample["outputs"])
-                    data_output = convert_image(data_output.cpu())
+                    data_actual = convert_image(sample["outputs"], sample["dims"])
+                    data_output = convert_image(data_output.cpu(), sample["dims"])
                     images = torch.cat((data_actual, data_output), dim=3)
                     save_image(images,
                                join(args.model_path,
@@ -155,8 +155,8 @@ def test(args, model, device, test_loader, criterion, epoch):
                 data_input = sample["inputs"].to(device, dtype=torch.float32)
                 data_output = model(data_input)
 
-                sample_actual = convert_image(sample["outputs"])
-                sample_output = convert_image(data_output.cpu())
+                sample_actual = convert_image(sample["outputs"], sample["dims"])
+                sample_output = convert_image(data_output.cpu(), sample["dims"])
                 images = torch.cat((sample_actual, sample_output), dim=3)
                 save_image(images,
                            join(args.model_path,
@@ -170,8 +170,8 @@ def test(args, model, device, test_loader, criterion, epoch):
             logging.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
 
 
-def convert_image(data):
-    converted = data.transpose(dim0=0, dim1=1).view((1, 3, 512, 512))
+def convert_image(data, dims):
+    converted = data.transpose(dim0=0, dim1=1).view((1, 3, dims[0], dims[1]))
     converted = ((converted * 0.5) + 0.5).clamp(0, 1)
     return converted
 
