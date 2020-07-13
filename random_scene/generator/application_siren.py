@@ -11,7 +11,7 @@ class ApplicationSiren:
 
     def __init__(self, seed=1234):
         self.window_name = b'Application Siren'
-        self.window_size = (512, 512)
+        self.window_size = (256, 256)
         self.camera_yaw = 180.0
         self.camera_pitch = 0.0
         self.camera_position = np.array([0.0, 1.5, 0.0, 1.], dtype='float32')
@@ -31,7 +31,7 @@ class ApplicationSiren:
         self.activate_next_scene = False
         self.cubemap = [None,None,None,None,None]
         self.cube_proj = perspective(90.0, 1.0, 0.1, 200.0)
-        self.cubemap_size = (1024, 1024)
+        self.cubemap_size = (2048, 2048)
 
         self.position_delta = 2.0 / self.window_size[0]
         self.angle_delta = math.degrees(math.atan(2.0 / self.window_size[0]))
@@ -193,7 +193,7 @@ class ApplicationSiren:
         if self.generation_mode:
             print("Saving scene " + str(self.generation_count))
             save_cubemap = False
-            positions, rotations = self.__generate_random_positions(4)
+            positions, rotations = self.__generate_random_positions(4, 4)
             offset = positions[0][0]
             print("Eye offset=" + str(offset))
             for i, (pos,rot) in enumerate(zip(positions, rotations)):
@@ -402,7 +402,7 @@ class ApplicationSiren:
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
 
         version = "4"
-        save_path = "screens4_512"
+        save_path = "screens4_256X"
         if not os.path.exists(save_path):
             os.mkdir(save_path)
         filename = get_filename(version, self.seeds[-1], filename_tag, (camera_position[0]/eye_offset,
@@ -428,7 +428,7 @@ class ApplicationSiren:
                 file_path = os.path.join(save_path, cubemap_filename)
                 image.save(file_path, 'png')
 
-    def __generate_random_positions(self, num):
+    def __generate_random_positions(self, num, count=1):
         eye_offset = np.random.uniform(0.015, 0.04)
         positions = np.array([[eye_offset,0.0,0.0,0.0],[-eye_offset,0.0,0.0,0.0]], dtype=np.float32)
         rotations = np.array([[0.0,0.0],[0.0,0.0]], dtype=np.float32)
@@ -447,109 +447,110 @@ class ApplicationSiren:
         for i in range(num):
             for j in range(num):
                 for k in range(num):
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[x, y, z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                    for c in range(count):
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[x, y, z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[-x, y, z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[-x, y, z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[x, -y, z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[x, -y, z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[-x, -y, z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[-x, -y, z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[x, y, -z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[x, y, -z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[-x, y, -z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[-x, y, -z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[x, -y, -z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[x, -y, -z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
-                    x = np.random.uniform(np.power(x_range[i], bounds_power),
-                                          np.power(x_range[i + 1], bounds_power)) * x_bound
-                    y = np.random.uniform(np.power(y_range[j], bounds_power),
-                                          np.power(y_range[j + 1], bounds_power)) * y_bound
-                    z = np.random.uniform(np.power(z_range[k], bounds_power),
-                                          np.power(z_range[k + 1], bounds_power)) * z_bound
-                    p = np.array([[-x, -y, -z, 0.0]], dtype=np.float32)
-                    positions = np.append(positions, p, axis=0)
+                        x = np.random.uniform(np.power(x_range[i], bounds_power),
+                                              np.power(x_range[i + 1], bounds_power)) * x_bound
+                        y = np.random.uniform(np.power(y_range[j], bounds_power),
+                                              np.power(y_range[j + 1], bounds_power)) * y_bound
+                        z = np.random.uniform(np.power(z_range[k], bounds_power),
+                                              np.power(z_range[k + 1], bounds_power)) * z_bound
+                        p = np.array([[-x, -y, -z, 0.0]], dtype=np.float32)
+                        positions = np.append(positions, p, axis=0)
 
-                    u = np.random.uniform(-u_bound, u_bound)
-                    v = np.random.uniform(-v_bound, v_bound)
-                    rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
+                        u = np.random.uniform(-u_bound, u_bound)
+                        v = np.random.uniform(-v_bound, v_bound)
+                        rotations = np.append(rotations, np.array([[u, v]], dtype=np.float32), axis=0)
 
         return positions, rotations
 
