@@ -472,7 +472,8 @@ class RandomSceneDataset(Dataset):
 class RandomSceneSirenFileList(Dataset):
     """Random scene dataset."""
 
-    def __init__(self, root_dir, dataset_seed, batch_size, num_workers, pin_memory, test_percent=0.1, is_test=False, shuffle=True, pos_scale=[1.0,1.0,1.0], transform=None):
+    def __init__(self, root_dir, dataset_seed, batch_size, num_workers, pin_memory, test_percent=0.1, is_test=False,
+                 shuffle=True, pos_scale=None, importance=None, transform=None):
         """
         Args:
             root_dir (string): Directory with all the images.
@@ -486,7 +487,11 @@ class RandomSceneSirenFileList(Dataset):
         self.num_workers = num_workers
         self.pin_memory = pin_memory
         self.shuffle = shuffle
-        self.pos_scale = pos_scale
+        if pos_scale is None:
+            self.pos_scale = [1.0, 1.0, 1.0]
+        else:
+            self.pos_scale = pos_scale
+        self.importance = importance
         self.test_percent = min(max(test_percent, 0.0), 1.0)
         self.is_test = is_test
         self.file_names = []
@@ -520,7 +525,8 @@ class RandomSceneSirenFileList(Dataset):
 
     def generate_dataloader(self, file_list):
         sampleset = RandomSceneSirenSampleSetList(file_list=[join(self.root_dir, f) for f in file_list],
-                                                  pos_scale=self.pos_scale, transform=self.transform)
+                                                  pos_scale=self.pos_scale, importance=self.importance,
+                                                  transform=self.transform)
         dataloader = torch.utils.data.DataLoader(sampleset, batch_size=self.batch_size, num_workers=self.num_workers,
                                                  pin_memory=self.pin_memory, shuffle=self.shuffle)
         return dataloader
@@ -634,7 +640,7 @@ class SirenSampleRandomizePosition(object):
 class RandomSceneSirenSampleSetList(Dataset):
     """Random scene dataset. """
 
-    def __init__(self, file_list, pos_scale=None, transform=None):
+    def __init__(self, file_list, pos_scale=None, transform=None, importance=None):
         """
         Args:
             file_list (list of strings): File list for the image to samples.
@@ -648,6 +654,7 @@ class RandomSceneSirenSampleSetList(Dataset):
         self.image = []
         self.inputs = []
         self.dims = []
+        self.indices = torch.zeros((0,3), dtype=torch.int32)
 
         for i, file_path in enumerate(file_list):
             vg = match("ss([1234])_([0-9]*)_.*.png", basename(file_path))
@@ -663,8 +670,26 @@ class RandomSceneSirenSampleSetList(Dataset):
                 logging.error("Invalid version {}".format(vg.group(1)))
                 continue
 
-            image = np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32)
-            image = np.clip((2.0 / 255.0) * image, 0.0, 2.0) - 1.0
+            image = np.clip((1.0 / 255.0) * np.array(cv2.imread(file_path, cv2.IMREAD_UNCHANGED), dtype=np.float32), 0.0, 1.0)
+
+            if importance:
+                edges = cv2.Laplacian(cv2.cvtColor(image[:, :, 0:3], cv2.COLOR_BGR2GRAY), cv2.CV_32F, ksize=1)
+                edges = importance * torch.sqrt(torch.abs(torch.from_numpy(edges)))
+            else:
+                edges = torch.zeros((image.shape[0], image.shape[1]), dtype=torch.float32)
+
+            index_count = torch.pow(2.0, edges).round_().view((image.shape[0]*image.shape[1])).type(torch.long)
+            index_img = len(self.image) * torch.ones((image.shape[0], image.shape[1]), dtype=torch.int32)
+            index_x = torch.linspace(0, image.shape[0]-1, image.shape[0], dtype=torch.int32)
+            index_x = (index_x.unsqueeze(1) * torch.ones(image.shape[0], dtype=torch.int32)).transpose(dim0=0, dim1=1)
+            index_y = torch.linspace(0, image.shape[1]-1, image.shape[1], dtype=torch.int32)
+            index_y = (index_y.unsqueeze(1) * torch.ones(image.shape[1], dtype=torch.int32))
+            index_stack = torch.stack((index_img, index_x, index_y), dim=2)
+            index_stack = index_stack.view((image.shape[0]*image.shape[1], 3))
+            index_expanded = torch.repeat_interleave(index_stack, index_count, dim=0)
+            self.indices = torch.cat((self.indices, index_expanded), dim=0)
+
+            image = 2.0 * image - 1.0
             image = image[:, :, 0:3][:, :, ::-1]
             self.image.append(torch.from_numpy(image.copy()))
             self.dims.append((image.shape[0], image.shape[1]))
@@ -699,9 +724,10 @@ class RandomSceneSirenSampleSetList(Dataset):
                 "dims": self.dims[img]}
 
     def __len__(self):
-        return sum([self.image[i].shape[0] * self.image[i].shape[1] for i in range(len(self.image))])
+        # return sum([self.image[i].shape[0] * self.image[i].shape[1] for i in range(len(self.image))])
+        return self.indices.shape[0]
 
-    def __getitem__(self, idx):
+    def getitem_old(self, idx):
         img_idx = idx
         img = 0
         for _ in range(len(self.image)):
@@ -714,6 +740,15 @@ class RandomSceneSirenSampleSetList(Dataset):
         ix = int(img_idx / self.image[img].shape[0])
         iy = int(img_idx % self.image[img].shape[0])
         sample = {"inputs": self._get_input(img, ix, iy), "outputs": self._get_output(img, ix, iy), "dims": self.dims[img]}
+        if self.transform:
+            sample = self.transform(sample)
+        return sample
+
+    def __getitem__(self, idx):
+        idx_vector = self.indices[idx]
+        img, ix, iy = idx_vector[0], idx_vector[1], idx_vector[2]
+        sample = {"inputs": self._get_input(img, ix, iy), "outputs": self._get_output(img, ix, iy),
+                  "dims": self.dims[img]}
         if self.transform:
             sample = self.transform(sample)
         return sample

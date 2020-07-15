@@ -305,7 +305,7 @@ def get_data_loaders(args, kwargs):
     dataset_path = join('..', args.dataset)
     train_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
                                             batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True,
-                                            pos_scale=position_scale)
+                                            pos_scale=position_scale, importance=4.0)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=4, shuffle=True)
 
     test_batch_size = args.test_batch_size if args.test_batch_size is not None else args.batch_size
