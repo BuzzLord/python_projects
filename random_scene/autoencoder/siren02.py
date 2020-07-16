@@ -99,6 +99,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
     train_set = train_loader.dataset
     transform = dl.SirenSampleRandomizePosition(args.random_position,
                                                 max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
+    render_vector_count = 512*512
     for image_idx, image_filename in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics()
@@ -121,10 +122,14 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                 with torch.no_grad():
                     sample = data_loader.dataset.get_in_order_sample()
                     data_input = sample["inputs"].to(device, dtype=torch.float32)
-                    data_output = model(data_input)
+                    data_output = torch.zeros((0, 3), dtype=torch.float32)
+                    for i in range(0, data_input.shape[0], render_vector_count):
+                        j = min(data_input.shape[0], i + render_vector_count)
+                        partial_output = model(data_input[i:j, :])
+                        data_output = torch.cat((data_output, partial_output.cpu()), dim=0)
 
                     data_actual = convert_image(sample["outputs"], sample["dims"])
-                    data_output = convert_image(data_output.cpu(), sample["dims"])
+                    data_output = convert_image(data_output, sample["dims"])
                     images = torch.cat((data_actual, data_output), dim=3)
                     save_image(images,
                                join(args.model_path,
@@ -137,6 +142,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
 
 def test(args, model, device, test_loader, criterion, epoch):
     model.eval()
+    render_vector_count = 512 * 512
     with torch.no_grad():
         test_set = test_loader.dataset
         test_loss = []
@@ -153,10 +159,14 @@ def test(args, model, device, test_loader, criterion, epoch):
             if image_idx % int(len(test_loader)/6) == 0:
                 sample = data_loader.dataset.get_in_order_sample()
                 data_input = sample["inputs"].to(device, dtype=torch.float32)
-                data_output = model(data_input)
+                data_output = torch.zeros((0, 3), dtype=torch.float32)
+                for i in range(0, data_input.shape[0], render_vector_count):
+                    j = min(data_input.shape[0], i + render_vector_count)
+                    partial_output = model(data_input[i:j, :])
+                    data_output = torch.cat((data_output, partial_output.cpu()), dim=0)
 
                 sample_actual = convert_image(sample["outputs"], sample["dims"])
-                sample_output = convert_image(data_output.cpu(), sample["dims"])
+                sample_output = convert_image(data_output, sample["dims"])
                 images = torch.cat((sample_actual, sample_output), dim=3)
                 save_image(images,
                            join(args.model_path,
