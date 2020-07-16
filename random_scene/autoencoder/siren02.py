@@ -222,7 +222,7 @@ def main(custom_args=None):
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
                         help='filename to log output to')
-    parser.add_argument('--dataset', type=str, metavar='PATH',
+    parser.add_argument('--dataset', nargs='+', type=str, metavar='PATH',
                         help='training dataset path')
     parser.add_argument('--dataset-seed', type=str, metavar='SEED',
                         help='dataset seed number')
@@ -302,7 +302,7 @@ def main(custom_args=None):
 
 def get_data_loaders(args, kwargs):
     position_scale = [1 / 4, 1 / 3, 1 / 3]
-    dataset_path = join('..', args.dataset)
+    dataset_path = [join('..', d) for d in args.dataset]
     train_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
                                             batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True,
                                             pos_scale=position_scale, importance=4.0)

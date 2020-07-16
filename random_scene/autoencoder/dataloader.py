@@ -476,12 +476,15 @@ class RandomSceneSirenFileList(Dataset):
                  shuffle=True, pos_scale=None, importance=None, transform=None):
         """
         Args:
-            root_dir (string): Directory with all the images.
+            root_dir (string or list): Directory with all the images.
             dataset_seed (string): String value of the integer seed of the scene we want
             transform (callable, optional): Optional transform to be applied
                 on a sample.
         """
-        self.root_dir = root_dir
+        if isinstance(root_dir, list):
+            self.root_dirs = root_dir
+        else:
+            self.root_dirs = [root_dir]
         self.dataset_seed = dataset_seed
         self.batch_size = batch_size
         self.num_workers = num_workers
@@ -497,11 +500,13 @@ class RandomSceneSirenFileList(Dataset):
         self.file_names = []
 
         logging.info("Checking dataset directory listing for {}".format(root_dir))
-        file_list = [f for f in listdir(self.root_dir) if isfile(join(self.root_dir, f)) and f.startswith("ss") and f.endswith(".png")]
+        file_list = []
+        for d in self.root_dirs:
+            file_list.extend([join(d, f) for f in listdir(d) if isfile(join(d, f)) and f.startswith("ss") and f.endswith(".png")])
         logging.info("Found " + str(len(file_list)) + " files. Collating filenames into list.")
         all_file_names = []
         for f in file_list:
-            fg = match("ss([34])_([0-9]*)_.*.png", f)
+            fg = match("ss([34])_([0-9]*)_.*.png", basename(f))
             seed = fg.group(2)
             if seed != dataset_seed:
                 continue
@@ -521,10 +526,12 @@ class RandomSceneSirenFileList(Dataset):
         else:
             self.file_names = all_file_names[file_count:]
 
+        logging.info("Resulting file list contains " + str(len(self.file_names)) + " files.")
+
         self.transform = transform
 
     def generate_dataloader(self, file_list):
-        sampleset = RandomSceneSirenSampleSetList(file_list=[join(self.root_dir, f) for f in file_list],
+        sampleset = RandomSceneSirenSampleSetList(file_list=file_list,
                                                   pos_scale=self.pos_scale, importance=self.importance,
                                                   transform=self.transform)
         dataloader = torch.utils.data.DataLoader(sampleset, batch_size=self.batch_size, num_workers=self.num_workers,
