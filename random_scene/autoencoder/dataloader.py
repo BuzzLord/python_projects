@@ -681,7 +681,7 @@ class RandomSceneSirenSampleSetList(Dataset):
 
             if importance:
                 edges = cv2.Laplacian(cv2.cvtColor(image[:, :, 0:3], cv2.COLOR_BGR2GRAY), cv2.CV_32F, ksize=1)
-                edges = importance * torch.sqrt(torch.abs(torch.from_numpy(edges)))
+                edges = importance * torch.abs(torch.from_numpy(edges))
             else:
                 edges = torch.zeros((image.shape[0], image.shape[1]), dtype=torch.float32)
 
