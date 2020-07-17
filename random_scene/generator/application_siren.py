@@ -21,7 +21,7 @@ class ApplicationSiren:
 
         self.save_screenshot = False
         self.generation_mode = False
-        self.generation_count = 5
+        self.generation_count = 1
 
         self.seeds = [seed]
         self.scene = RandomScene(seed)
@@ -405,8 +405,13 @@ class ApplicationSiren:
         save_path = "screens4_256X"
         if not os.path.exists(save_path):
             os.mkdir(save_path)
-        filename = get_filename(version, self.seeds[-1], filename_tag, (camera_position[0]/eye_offset,
-                                camera_position[1]/eye_offset, camera_position[2]/eye_offset), camera_direction)
+
+        # Normalize position
+        pos = (camera_position[0]/eye_offset, camera_position[1]/eye_offset, camera_position[2]/eye_offset)
+        # Flip sign on theta, since handedness changes
+        dir = (-camera_direction[0], camera_direction[1])
+
+        filename = get_filename(version, self.seeds[-1], filename_tag, pos, dir)
         file_path = os.path.join(save_path, filename)
         image.save(file_path, 'png')
 
@@ -437,8 +442,8 @@ class ApplicationSiren:
         z_bound = 3.0 * eye_offset
         bounds_power = 2.0
 
-        u_bound = 90.0 - np.rad2deg(0.5 * np.pi * (1.0 - (1.0 / self.window_size[0])))
-        v_bound = 90.0 - np.rad2deg(0.5 * np.pi * (1.0 - (1.0 / self.window_size[1])))
+        u_bound = 90.0 / self.window_size[0]
+        v_bound = 90.0 / self.window_size[1]
 
         x_range = np.linspace(0.0, 1.0, num=num + 1)
         y_range = np.linspace(0.0, 1.0, num=num + 1)
