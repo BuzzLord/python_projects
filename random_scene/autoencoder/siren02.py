@@ -100,10 +100,10 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
     transform = dl.SirenSampleRandomizePosition(args.random_position,
                                                 max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
     render_vector_count = 512*512
-    for image_idx, image_filename in enumerate(train_loader):
+    for image_idx, sample_list in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics()
-        data_loader = train_set.generate_dataloader(image_filename)
+        data_loader = train_set.generate_dataloader(sample_list)
 
         loss_data = []
         for batch_idx, sample in enumerate(data_loader):
@@ -313,16 +313,16 @@ def main(custom_args=None):
 def get_data_loaders(args, kwargs):
     position_scale = [1 / 4, 1 / 3, 1 / 3]
     dataset_path = [join('..', d) for d in args.dataset]
-    train_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
-                                            batch_size=args.batch_size, num_workers=4, pin_memory=True, shuffle=True,
-                                            pos_scale=position_scale, importance=3.0)
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=4, shuffle=True)
+    train_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
+                                                  batch_size=args.batch_size, num_workers=4, pin_memory=True,
+                                                  shuffle=True, pos_scale=position_scale, importance=1.0)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=4, shuffle=True, collate_fn=train_set.collate_fn)
 
     test_batch_size = args.test_batch_size if args.test_batch_size is not None else args.batch_size
-    test_set = dl.RandomSceneSirenFileList(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=True,
-                                           batch_size=test_batch_size, num_workers=4, pin_memory=True,
-                                           shuffle=False, pos_scale=position_scale)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=4, shuffle=False)
+    test_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=True,
+                                                 batch_size=test_batch_size, num_workers=4, pin_memory=True,
+                                                 shuffle=False, pos_scale=position_scale)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=4, shuffle=False, collate_fn=test_set.collate_fn)
 
     return test_loader, train_loader
 
