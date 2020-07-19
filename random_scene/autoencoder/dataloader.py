@@ -469,7 +469,6 @@ class RandomSceneDataset(Dataset):
 
 # -- SIREN ------------------------
 
-
 class RandomSceneSirenFileListLoader(Dataset):
     """Random scene dataset."""
 
@@ -620,34 +619,38 @@ class RandomSceneSirenSampleLoader:
         self.max_t = max_t
 
         self.dims = []
-        self.image = torch.zeros((0,3), device=self.device, dtype=torch.float32)
-        self.inputs = torch.zeros((0,5), device=self.device, dtype=torch.float32)
-        self.indices = torch.zeros((0,), device=self.device, dtype=torch.long)
 
         self.x_row = {}
         self.y_row = {}
         self.zeros = {}
         self.vec = {}
 
+        index_list = []
+        image_list = []
+        inputs_list = []
+        index_size = 0
         for i, sample in enumerate(sample_list):
             dims = sample["dims"]
             image_size = dims[0] * dims[1]
 
-            index_size = self.image.shape[0]
             index_linear = torch.linspace(index_size, index_size+image_size-1, image_size,
                                           device=self.device, dtype=torch.long)
             index_expanded = torch.repeat_interleave(index_linear, sample["sample_count"], dim=0)
+            index_list.append(index_expanded)
             self.dims.append((dims[0], dims[1], index_size))
-
-            self.indices = torch.cat((self.indices, index_expanded), dim=0)
+            index_size += image_size
 
             image = sample["image"]
             image = image.view((image_size, 3))
-            self.image = torch.cat((self.image, image), dim=0)
+            image_list.append(image)
 
             inputs = sample["inputs"]
             inputs = inputs.view((image_size, 5))
-            self.inputs = torch.cat((self.inputs, inputs), dim=0)
+            inputs_list.append(inputs)
+
+        self.indices = torch.cat(index_list, dim=0)
+        self.image = torch.cat(image_list, dim=0)
+        self.inputs = torch.cat(inputs_list, dim=0)
 
         self.num_batches = int(np.ceil(self.indices.shape[0] / self.batch_size))
         if self.shuffle:
