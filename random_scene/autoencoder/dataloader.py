@@ -474,7 +474,7 @@ class RandomSceneSirenFileListLoader(Dataset):
     """Random scene dataset."""
 
     def __init__(self, root_dir, dataset_seed, batch_size, num_workers, pin_memory, test_percent=0.1, is_test=False,
-                 shuffle=True, pos_scale=None, importance=None, transform=None):
+                 shuffle=True, pos_scale=None, importance=None, transform=None, device=None):
         """
         Args:
             root_dir (string or list): Directory with all the images.
@@ -496,6 +496,10 @@ class RandomSceneSirenFileListLoader(Dataset):
         else:
             self.pos_scale = pos_scale
         self.importance = importance
+        if device is None:
+            self.device = torch.device("cpu")
+        else:
+            self.device = device
         self.test_percent = min(max(test_percent, 0.0), 1.0)
         self.is_test = is_test
         self.file_names = []
@@ -532,10 +536,10 @@ class RandomSceneSirenFileListLoader(Dataset):
     def collate_fn(self, batch):
         return batch
 
-    def generate_dataloader(self, sample_list):
-        sampleset = RandomSceneSirenSampleLoader(sample_list=sample_list)
-        dataloader = torch.utils.data.DataLoader(sampleset, batch_size=self.batch_size, num_workers=self.num_workers,
-                                                 pin_memory=self.pin_memory, shuffle=self.shuffle)
+    def generate_dataloader(self, sample_list, apply_transform=False, max_t=1.0):
+        dataloader = RandomSceneSirenSampleLoader(sample_list=sample_list, batch_size=self.batch_size,
+                                                  device=self.device, shuffle=self.shuffle,
+                                                  apply_transform=apply_transform, max_t=max_t)
         return dataloader
 
     def __len__(self):
@@ -567,9 +571,11 @@ class RandomSceneSirenFileListLoader(Dataset):
             edges = torch.zeros((image.shape[0], image.shape[1]), dtype=torch.float32)
 
         sample_count = torch.pow(2.0, edges).round_().view((image.shape[0] * image.shape[1])).type(torch.long)
+        sample_count = sample_count.to(self.device, dtype=torch.long)
 
         image = 2.0 * image - 1.0
         image = image[:, :, 0:3][:, :, ::-1]
+        image_cuda = torch.from_numpy(image.copy()).to(self.device, dtype=torch.float32)
 
         pos = torch.ones(image.shape, dtype=torch.float32)
         pos[:, :, 0].mul_(pos_group[0] * self.pos_scale[0])
@@ -585,44 +591,71 @@ class RandomSceneSirenFileListLoader(Dataset):
         phi = phi + rot_group[1] / 90
         phi = (phi.unsqueeze(1) * torch.ones(image.shape[1]))
         inputs = torch.cat((pos, theta.unsqueeze(2), phi.unsqueeze(2)), dim=2)
+        inputs = inputs.to(self.device, dtype=torch.float32)
 
         return { "filename": self.file_names[idx],
-                 "image": torch.from_numpy(image.copy()),
+                 "image": image_cuda,
                  "inputs": inputs,
                  "sample_count": sample_count,
                  "dims": (image.shape[0], image.shape[1])
                  }
 
 
-class RandomSceneSirenSampleLoader(Dataset):
-    """Random scene dataset. """
+class RandomSceneSirenSampleLoader:
+    """Random scene sample dataloader.
+       Note: not a dataset to be used with the dataloader. It is itself a dataloader.
+       Implements iterable.
+    """
 
-    def __init__(self, sample_list):
+    def __init__(self, sample_list, batch_size, device, shuffle=True, apply_transform=True, max_t=1.0):
         """
         Args:
             sample_list (list(dict)): Sample list of images/inputs to sample pixels from.
         """
         self.sample_list = sample_list
-        self.image = []
-        self.inputs = []
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.device = device
+        self.apply_transform = apply_transform
+        self.max_t = max_t
+
         self.dims = []
-        self.indices = torch.zeros((0,3), dtype=torch.int32)
+        self.image = torch.zeros((0,3), device=self.device, dtype=torch.float32)
+        self.inputs = torch.zeros((0,5), device=self.device, dtype=torch.float32)
+        self.indices = torch.zeros((0,), device=self.device, dtype=torch.long)
+
+        self.x_row = {}
+        self.y_row = {}
+        self.zeros = {}
+        self.vec = {}
 
         for i, sample in enumerate(sample_list):
-            image = sample["image"]
-            index_count = sample["sample_count"]
-            index_img = i * torch.ones((image.shape[0], image.shape[1]), dtype=torch.int32)
-            index_x = torch.linspace(0, image.shape[0]-1, image.shape[0], dtype=torch.int32)
-            index_x = (index_x.unsqueeze(1) * torch.ones(image.shape[0], dtype=torch.int32)).transpose(dim0=0, dim1=1)
-            index_y = torch.linspace(0, image.shape[1]-1, image.shape[1], dtype=torch.int32)
-            index_y = (index_y.unsqueeze(1) * torch.ones(image.shape[1], dtype=torch.int32))
-            index_stack = torch.stack((index_img, index_x, index_y), dim=2)
-            index_stack = index_stack.view((image.shape[0]*image.shape[1], 3))
-            index_expanded = torch.repeat_interleave(index_stack, index_count, dim=0)
+            dims = sample["dims"]
+            image_size = dims[0] * dims[1]
+
+            index_size = self.image.shape[0]
+            index_linear = torch.linspace(index_size, index_size+image_size-1, image_size,
+                                          device=self.device, dtype=torch.long)
+            index_expanded = torch.repeat_interleave(index_linear, sample["sample_count"], dim=0)
+            self.dims.append((dims[0], dims[1], index_size))
+
             self.indices = torch.cat((self.indices, index_expanded), dim=0)
-            self.image.append(sample["image"])
-            self.dims.append((image.shape[0], image.shape[1]))
-            self.inputs.append(sample["inputs"])
+
+            image = sample["image"]
+            image = image.view((image_size, 3))
+            self.image = torch.cat((self.image, image), dim=0)
+
+            inputs = sample["inputs"]
+            inputs = inputs.view((image_size, 5))
+            self.inputs = torch.cat((self.inputs, inputs), dim=0)
+
+        self.num_batches = int(np.ceil(self.indices.shape[0] / self.batch_size))
+        if self.shuffle:
+            shuffle_indices = torch.randperm(self.indices.shape[0], device=self.device, dtype=torch.long)
+            self.indices = self.indices.index_select(0, shuffle_indices)
+
+    def set_max_t(self, max_t):
+        self.max_t = max_t
 
     def _get_input(self, img, x, y):
         return self.inputs[img][x, y]
@@ -631,19 +664,93 @@ class RandomSceneSirenSampleLoader(Dataset):
         return self.image[img][x, y]
 
     def get_in_order_sample(self, img=0):
-        return {"inputs": self.inputs[img].view(self.inputs[img].shape[0]*self.inputs[img].shape[1], 5),
-                "outputs": self.image[img].view(self.image[img].shape[0]*self.image[img].shape[1], 3),
+        dims = self.dims[img]
+        img_size = dims[0]*dims[1]
+        img_start = dims[2]
+        return {"inputs": self.inputs[img_start:(img_start+img_size), :],
+                "outputs": self.image[img_start:(img_start+img_size), :],
                 "dims": self.dims[img]}
 
+    def vector_transform(self, inputs):
+        position = inputs[:, 0:3]
+
+        # Take sin values for theta/phi look angle, get cos of them
+        u = 0.5 * np.pi * inputs[:, 3]
+        v = 0.5 * np.pi * inputs[:, 4]
+        sin_u, cos_u = torch.sin(u), torch.cos(u)
+        sin_v, cos_v = torch.sin(v), torch.cos(v)
+
+        # Construct rotation matrices
+        # Construct and cache the common rows tensors zeros, y_row = [zeros, ones, zeros], x_row = [ones, zeros, zeros]
+        if sin_u.shape in self.zeros:
+            zeros = self.zeros[sin_u.shape]
+        else:
+            zeros = torch.zeros(sin_u.shape, device=self.device)
+            self.zeros[sin_u.shape] = zeros
+
+        if sin_u.shape in self.y_row:
+            y_row = self.y_row[sin_u.shape]
+        else:
+            ones = torch.ones(sin_u.shape, device=self.device)
+            y_row = torch.stack((zeros, ones, zeros), dim=1)
+            self.y_row[sin_u.shape] = y_row
+
+        if sin_u.shape in self.x_row:
+            x_row = self.x_row[sin_u.shape]
+        else:
+            ones = torch.ones(sin_u.shape, device=self.device)
+            x_row = torch.stack((ones, zeros, zeros), dim=1)
+            self.x_row[sin_u.shape] = x_row
+
+        rot_y = torch.stack((torch.stack((cos_u, zeros, sin_u), dim=1), y_row,
+                             torch.stack((-sin_u, zeros, cos_u), dim=1)), dim=-1)
+        rot_x = torch.stack((x_row, torch.stack((zeros, cos_v, sin_v), dim=1),
+                             torch.stack((zeros, -sin_v, cos_v), dim=1)), dim=-1)
+        rot = torch.matmul(rot_y, rot_x)
+
+        # Rotate a forward vector by the rot matrices. Cache vec for later use.
+        if sin_u.shape in self.vec:
+            vec = self.vec[sin_u.shape]
+        else:
+            vec = (torch.ones((sin_u.shape[0], 1), device=self.device) *
+                   torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32, device=self.device)).unsqueeze(-1)
+            self.vec[sin_u.shape] = vec
+        look = torch.matmul(rot, vec).squeeze(-1)
+
+        # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
+        inv_look = 1 / look
+        sign = (inv_look < 0.0).type(torch.float32) * 2.0 - 1.0
+        tmin = (sign - position) * inv_look
+        tmin_index = torch.abs(tmin).argmin(1)
+        tmin_out = torch.clamp(torch.index_select(tmin, 1, tmin_index).diag(), -self.max_t, 0)
+        tmax = (-sign - position) * inv_look
+        tmax_index = torch.abs(tmax).argmin(1)
+        tmax_out = torch.clamp(torch.index_select(tmax, 1, tmax_index).diag(), 0, self.max_t)
+
+        # Randomly select a vector between the two intersection points, update pos to that
+        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape, device=self.device) + tmin_out
+        # max_position = position + look * tmax_out.unsqueeze(1)
+        # min_position = position + look * tmin_out.unsqueeze(1)
+        new_position = position + look * t.unsqueeze(1)
+        inputs[:, 0:3] = new_position
+        return inputs
+
     def __len__(self):
-        return self.indices.shape[0]
+        return self.num_batches
 
     def __getitem__(self, idx):
-        idx_vector = self.indices[idx]
-        img, ix, iy = idx_vector[0], idx_vector[1], idx_vector[2]
-        sample = {"inputs": self._get_input(img, ix, iy),
-                  "outputs": self._get_output(img, ix, iy),
-                  "dims": self.dims[img]
+        if idx >= self.num_batches:
+            raise IndexError
+        i = idx * self.batch_size
+        j = min(i + self.batch_size, self.indices.shape[0])
+        index_select = self.indices[i:j]
+        image = self.image.index_select(0, index_select)
+        inputs = self.inputs.index_select(0, index_select)
+        if self.apply_transform:
+            inputs = self.vector_transform(inputs)
+        sample = {"inputs": inputs,
+                  "outputs": image,
+                  "dims": None
                   }
         return sample
 

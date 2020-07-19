@@ -97,18 +97,16 @@ class Siren(nn.Module):
 def train(args, model, device, train_loader, criterion, optimizer, epoch):
     model.train()
     train_set = train_loader.dataset
-    transform = dl.SirenSampleRandomizePosition(args.random_position,
-                                                max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
     render_vector_count = 512*512
     for image_idx, sample_list in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics()
-        data_loader = train_set.generate_dataloader(sample_list)
-
+        data_loader = train_set.generate_dataloader(sample_list, apply_transform=args.random_position,
+                                                    max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
         loss_data = []
         for batch_idx, sample in enumerate(data_loader):
-            data_input = transform.vector_transform(sample["inputs"].to(device, dtype=torch.float32))
-            data_actual = sample["outputs"].to(device, dtype=torch.float32)
+            data_input = sample["inputs"]
+            data_actual = sample["outputs"]
 
             optimizer.zero_grad()
             data_output = model(data_input)
@@ -120,15 +118,15 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
         if args.log_interval > 0:
             if image_idx % 10 == 0:
                 with torch.no_grad():
-                    sample = data_loader.dataset.get_in_order_sample()
-                    data_input = sample["inputs"].to(device, dtype=torch.float32)
+                    sample = data_loader.get_in_order_sample()
+                    data_input = sample["inputs"]
                     data_output = torch.zeros((0, 3), dtype=torch.float32)
                     for i in range(0, data_input.shape[0], render_vector_count):
                         j = min(data_input.shape[0], i + render_vector_count)
                         partial_output = model(data_input[i:j, :])
                         data_output = torch.cat((data_output, partial_output.cpu()), dim=0)
 
-                    data_actual = convert_image(sample["outputs"], sample["dims"])
+                    data_actual = convert_image(sample["outputs"].cpu(), sample["dims"])
                     data_output = convert_image(data_output, sample["dims"])
                     images = torch.cat((data_actual, data_output), dim=3)
                     save_image(images,
@@ -150,22 +148,22 @@ def test(args, model, device, test_loader, criterion, epoch):
             data_loader = test_set.generate_dataloader(image_filename)
 
             for batch_idx, sample in enumerate(data_loader):
-                data_input = sample["inputs"].to(device, dtype=torch.float32)
-                data_actual = sample["outputs"].to(device, dtype=torch.float32)
+                data_input = sample["inputs"]
+                data_actual = sample["outputs"]
 
                 data_output = model(data_input)
                 test_loss.append(criterion(data_output, data_actual).item())
 
             if image_idx % int(len(test_loader)/6) == 0:
-                sample = data_loader.dataset.get_in_order_sample()
-                data_input = sample["inputs"].to(device, dtype=torch.float32)
+                sample = data_loader.get_in_order_sample()
+                data_input = sample["inputs"]
                 data_output = torch.zeros((0, 3), dtype=torch.float32)
                 for i in range(0, data_input.shape[0], render_vector_count):
                     j = min(data_input.shape[0], i + render_vector_count)
                     partial_output = model(data_input[i:j, :])
                     data_output = torch.cat((data_output, partial_output.cpu()), dim=0)
 
-                sample_actual = convert_image(sample["outputs"], sample["dims"])
+                sample_actual = convert_image(sample["outputs"].cpu(), sample["dims"])
                 sample_output = convert_image(data_output, sample["dims"])
                 images = torch.cat((sample_actual, sample_output), dim=3)
                 save_image(images,
@@ -181,19 +179,25 @@ def test(args, model, device, test_loader, criterion, epoch):
 
 
 def convert_image(data, dims):
+    if dims is None:
+        dims = (256, round(data.shape[0] / 256))
     converted = data.transpose(dim0=0, dim1=1).view((1, 3, dims[0], dims[1]))
     converted = ((converted * 0.5) + 0.5).clamp(0, 1)
     return converted
 
 
-def main(custom_args=None):
-    # Training settings
-    model_number = "02"
+def arg_parser(input_args, model_number):
     parser = argparse.ArgumentParser(description='PyTorch SIREN Model ' + model_number + ' Experiment')
     parser.add_argument('--batch-size', type=int, default=2048, metavar='N',
                         help='input batch size for training (default: 2048)')
     parser.add_argument('--test-batch-size', type=int, metavar='N',
                         help='input batch size for testing (default: batch-size)')
+    parser.add_argument('--img-batch-size', type=int, default=8, metavar='I',
+                        help='number of images to pass to sample dataloader (default: 8)')
+    parser.add_argument('--num-workers', type=int, default=4, metavar='N',
+                        help='number of workers to pass to the image dataloader (default: 4)')
+    parser.add_argument('--dont-pin-memory', action='store_true', default=False,
+                        help='do not pass pin_memory=True to image dataloader')
     parser.add_argument('--epochs', type=int, default=20, metavar='N',
                         help='number of epochs to train (default: 20)')
     parser.add_argument('--epoch-start', type=int, default=1, metavar='N',
@@ -227,7 +231,7 @@ def main(custom_args=None):
     parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
                         help='filename to pre-trained model state to load')
     parser.add_argument('--model-path', type=str, metavar='PATH',
-                        help='pathname for this models output (default siren'+model_number+')')
+                        help='pathname for this models output (default siren' + model_number + ')')
     parser.add_argument('--log-interval', type=int, default=128, metavar='N',
                         help='how many batches to wait before logging training status')
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
@@ -249,12 +253,19 @@ def main(custom_args=None):
                         help='Rotational encoding harmonics (default: 4)')
     parser.add_argument('--print-statistics', action='store_true', default=False,
                         help='print out layer weight statistics periodically')
-    args = parser.parse_args(args=custom_args)
+    args = parser.parse_args(args=input_args)
 
     if args.model_path is None:
         args.model_path = join("siren{}".format(model_number),
                                "model_{:d}_{:d}_{:d}_{:d}".format(args.pos_encoding, args.rot_encoding,
                                                                   args.hidden_size, args.hidden_layers))
+    return args
+
+
+def main(custom_args=None):
+    # Training settings
+    model_number = "02"
+    args = arg_parser(custom_args, model_number)
 
     if not os.path.exists(args.model_path):
         os.mkdir(args.model_path)
@@ -276,9 +287,7 @@ def main(custom_args=None):
 
     device = torch.device("cuda" if use_cuda else "cpu")
 
-    kwargs = {'num_workers': 4, 'pin_memory': True} if use_cuda else {}
-
-    test_loader, train_loader, = get_data_loaders(args, kwargs)
+    test_loader, train_loader, = get_data_loaders(args, device)
 
     logging.info("Siren configured with pos_encoding = ({},{}), hidden_size = {}, hidden_layers = {}".format(
         args.pos_encoding, args.rot_encoding, args.hidden_size, args.hidden_layers))
@@ -310,19 +319,23 @@ def main(custom_args=None):
         scheduler.step()
 
 
-def get_data_loaders(args, kwargs):
+def get_data_loaders(args, device):
     position_scale = [1 / 4, 1 / 3, 1 / 3]
     dataset_path = [join('..', d) for d in args.dataset]
     train_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
-                                                  batch_size=args.batch_size, num_workers=4, pin_memory=True,
-                                                  shuffle=True, pos_scale=position_scale, importance=1.0)
-    train_loader = torch.utils.data.DataLoader(train_set, batch_size=4, shuffle=True, collate_fn=train_set.collate_fn)
+                                                  batch_size=args.batch_size, num_workers=args.num_workers,
+                                                  pin_memory=(not args.dont_pin_memory), shuffle=True,
+                                                  pos_scale=position_scale, importance=1.0, device=device)
+    train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.img_batch_size, shuffle=True,
+                                               collate_fn=train_set.collate_fn)
 
     test_batch_size = args.test_batch_size if args.test_batch_size is not None else args.batch_size
     test_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=True,
-                                                 batch_size=test_batch_size, num_workers=4, pin_memory=True,
-                                                 shuffle=False, pos_scale=position_scale)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=4, shuffle=False, collate_fn=test_set.collate_fn)
+                                                 batch_size=test_batch_size, num_workers=args.num_workers,
+                                                 pin_memory=(not args.dont_pin_memory), shuffle=False,
+                                                 pos_scale=position_scale, device=device)
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.img_batch_size, shuffle=False,
+                                              collate_fn=test_set.collate_fn)
 
     return test_loader, train_loader
 
