@@ -154,6 +154,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
 def test(args, model, device, test_loader, criterion, epoch):
     model.eval()
     render_vector_count = 512 * 512
+    img_save_modulus = max(1, int(len(test_loader)/6))
     with torch.no_grad():
         test_set = test_loader.dataset
         test_loss = []
@@ -167,7 +168,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                 data_output = model(data_input)
                 test_loss.append(criterion(data_output, data_actual).item())
 
-            if image_idx % int(len(test_loader)/6) == 0:
+            if image_idx % img_save_modulus == 0:
                 sample = data_loader.get_in_order_sample()
                 data_input = sample["inputs"]
                 data_output = torch.zeros((0, 3), dtype=torch.float32)
@@ -181,7 +182,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                 images = torch.cat((sample_actual, sample_output), dim=3)
                 save_image(images,
                            join(args.model_path,
-                                "test{:02d}-{:02d}.png".format(epoch, int(image_idx/int(len(test_loader)/6)))),
+                                "test{:02d}-{:02d}.png".format(epoch, int(image_idx/img_save_modulus))),
                            nrow=1)
 
             if len(test_loss) > 1:
@@ -236,6 +237,8 @@ def arg_parser(input_args, model_number="03"):
                         help='Randomize position number of steps to max_t (default: 5)')
     parser.add_argument('--random-max-t', type=float, default=0.5, metavar='T',
                         help='Randomize position max t (default: 0.5)')
+    parser.add_argument('--importance', type=float, metavar='IMP',
+                        help='Importance sampling scalar')
 
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
@@ -338,7 +341,7 @@ def get_data_loaders(args, device):
     train_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
                                                   batch_size=args.batch_size, num_workers=args.num_workers,
                                                   pin_memory=(not args.dont_pin_memory), shuffle=True,
-                                                  pos_scale=position_scale, importance=1.0, device=device)
+                                                  pos_scale=position_scale, importance=args.importance, device=device)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.img_batch_size, shuffle=True,
                                                collate_fn=train_set.collate_fn)
 
