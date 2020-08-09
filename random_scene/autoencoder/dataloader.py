@@ -591,14 +591,7 @@ class RandomSceneSirenFileListLoader(Dataset):
 
         image = np.clip((1.0 / 255.0) * np.array(cv2.imread(self.file_names[idx], cv2.IMREAD_UNCHANGED),
                                                  dtype=np.float32), 0.0, 1.0)
-
-        if self.importance:
-            edges = cv2.Laplacian(cv2.cvtColor(image[:, :, 0:3], cv2.COLOR_BGR2GRAY), cv2.CV_32F, ksize=1)
-            res_multiplier = np.min(np.log2(image.shape[0]*image.shape[1]) * 0.5 - 7, 0)
-            edges = self.importance * res_multiplier * torch.abs(torch.from_numpy(edges))
-        else:
-            edges = torch.zeros((image.shape[0], image.shape[1]), dtype=torch.float32)
-
+        edges = self.get_image_edges(image)
         sample_count = torch.pow(2.0, edges).round_().view((image.shape[0] * image.shape[1])).type(torch.long)
         sample_count = sample_count.to(self.device, dtype=torch.long)
 
@@ -606,26 +599,10 @@ class RandomSceneSirenFileListLoader(Dataset):
         image = image[:, :, 0:3][:, :, ::-1]
         image_cuda = torch.from_numpy(image.copy()).to(self.device, dtype=torch.float32)
 
-        position = torch.ones(image.shape, device=self.device, dtype=torch.float32)
-        position[:, :, 0].mul_(pos_group[0] * self.pos_scale[0])
-        position[:, :, 1].mul_(pos_group[1] * self.pos_scale[1])
-        position[:, :, 2].mul_(pos_group[2] * self.pos_scale[2])
+        position = self.construct_positions(image.shape[0], image.shape[1], pos_group)
+        theta, phi = self.construct_angles(image.shape[0], image.shape[1], rot_group)
 
-        dim0 = image.shape[0]
-        dim1 = image.shape[1]
-        theta_base = torch.linspace(-1.0 + (1 / float(dim0)), 1.0 - (1 / float(dim0)), dim0,
-                                    device=self.device, dtype=torch.float32).repeat((dim1, 1)).transpose(0, 1)
-        phi_base = torch.linspace(1.0 - (1 / float(dim1)), -1.0 + (1 / float(dim1)), dim1,
-                                  device=self.device, dtype=torch.float32).repeat((dim0, 1))
-
-        vector = angle_to_vector(theta_base.reshape(dim0*dim1), phi_base.reshape(dim0*dim1))
-        rotation = torch.tensor([[rot_group[0]/90.0, rot_group[1]/90.0]],
-                                device=self.device, dtype=torch.float32).repeat((vector.shape[0], 1))
-
-        rotated_vector = rotate_vector(vector, rotation[:,0], rotation[:,1])
-        theta, phi = vector_to_angle(rotated_vector)
-
-        inputs = torch.cat((position, theta.reshape(dim0, dim1, 1), phi.reshape(dim0, dim1, 1)), dim=2)
+        inputs = torch.cat((position, theta, phi), dim=2)
 
         return { "filename": self.file_names[idx],
                  "image": image_cuda,
@@ -634,6 +611,34 @@ class RandomSceneSirenFileListLoader(Dataset):
                  "dims": (image.shape[0], image.shape[1])
                  }
 
+    def construct_angles(self, dim0, dim1, rot_group):
+        theta_base = torch.linspace(-1.0 + (1 / float(dim0)), 1.0 - (1 / float(dim0)), dim0,
+                                    device=self.device, dtype=torch.float32).repeat((dim1, 1)).transpose(1, 0)
+        phi_base = torch.linspace(1.0 - (1 / float(dim1)), -1.0 + (1 / float(dim1)), dim1,
+                                  device=self.device, dtype=torch.float32).repeat((dim0, 1))
+        vector = angle_to_vector(theta_base.reshape(dim0 * dim1), phi_base.reshape(dim0 * dim1))
+        rotation = torch.tensor([[rot_group[0] / 90.0, rot_group[1] / 90.0]],
+                                device=self.device, dtype=torch.float32).repeat((vector.shape[0], 1))
+        rotated_vector = rotate_vector(vector, rotation[:, 0], rotation[:, 1])
+        theta, phi = vector_to_angle(rotated_vector)
+        return theta.reshape(dim0, dim1, 1), phi.reshape(dim0, dim1, 1)
+
+    def construct_positions(self, dim0, dim1, pos_group):
+        position = torch.ones((dim0, dim1, 3), device=self.device, dtype=torch.float32)
+        position[:, :, 0].mul_(pos_group[0] * self.pos_scale[0])
+        position[:, :, 1].mul_(pos_group[1] * self.pos_scale[1])
+        position[:, :, 2].mul_(pos_group[2] * self.pos_scale[2])
+        return position
+
+    def get_image_edges(self, image):
+        if self.importance:
+            edges = cv2.Laplacian(cv2.cvtColor(image[:, :, 0:3], cv2.COLOR_BGR2GRAY), cv2.CV_32F, ksize=1)
+            res_multiplier = np.min(np.log2(image.shape[0] * image.shape[1]) * 0.5 - 7, 0)
+            edges = self.importance * res_multiplier * torch.abs(torch.from_numpy(edges))
+        else:
+            edges = torch.zeros((image.shape[0], image.shape[1]), dtype=torch.float32)
+        return edges
+
 
 class RandomSceneSirenSampleLoader:
     """Random scene sample dataloader.
@@ -641,7 +646,7 @@ class RandomSceneSirenSampleLoader:
        Implements iterable.
     """
 
-    def __init__(self, sample_list, batch_size, device, shuffle=True, apply_transform=True, max_t=1.0):
+    def __init__(self, sample_list, batch_size, shuffle=True, device=None, apply_transform=True, max_t=1.0):
         """
         Args:
             sample_list (list(dict)): Sample list of images/inputs to sample pixels from.
@@ -649,7 +654,10 @@ class RandomSceneSirenSampleLoader:
         self.sample_list = sample_list
         self.batch_size = batch_size
         self.shuffle = shuffle
-        self.device = device
+        if device is None:
+            self.device = torch.device("cpu")
+        else:
+            self.device = device
         self.apply_transform = apply_transform
         self.max_t = max_t
 
@@ -720,8 +728,8 @@ class RandomSceneSirenSampleLoader:
 
         # Randomly select a vector between the two intersection points, update pos to that
         t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape, device=self.device) + tmin_out
-        # max_position = position + look * tmax_out.unsqueeze(1)
-        # min_position = position + look * tmin_out.unsqueeze(1)
+        max_position = position + look * tmax_out.unsqueeze(1)
+        min_position = position + look * tmin_out.unsqueeze(1)
         new_position = position + look * t.unsqueeze(1)
         inputs[:, 0:3] = new_position
         return inputs
@@ -1035,26 +1043,112 @@ def main_transform():
     def deg2norm(angle):
         return angle / 90
 
-    sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,deg2norm(45),0],[0,0,0,deg2norm(45),0],
-                                                   [0,-0.4330127,0.75,0,deg2norm(30)],[0,0,0,0,deg2norm(30)]], dtype=np.float32)),
-              "outputs": torch.from_numpy(np.zeros((2,3), dtype=np.float32))}
-    # single_sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
-    #                  "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
-    transform = SirenSampleRandomizePosition(max_t=10.0)
-    transform.vector_transform(sample["inputs"])
+    dims = (32, 32)
+    sample = {"inputs": torch.zeros((dims[0], dims[1], 5), dtype=torch.float32),
+              "image": torch.zeros((dims[0], dims[1], 3), dtype=torch.float32),
+              "dims": (dims[0], dims[1]),
+              "sample_count": torch.ones(dims[0]*dims[1], dtype=torch.long)}
+
+    test_inputs = torch.tensor([[-0.5,0,0.5,deg2norm(45),0],[0,0,0,deg2norm(45),0],
+                               [0,-0.4330127,0.75,0,deg2norm(30)],[0,0,0,0,deg2norm(30)]], dtype=torch.float32)
+    transform = RandomSceneSirenSampleLoader([sample], 1, max_t=10.0)
+    transform.vector_transform(test_inputs)
 
 
 def main():
+    loader_test = RandomSceneSirenFileListLoader(root_dir=[], dataset_seed="1", batch_size=1, num_workers=1, pin_memory=True)
+
     res_angles = {
-        2: (0.5 / 2, 1.000796e-1),
-        8: (0.5 / 8, 6.14564e-3),
-        32: (0.5 / 32, 3.8353e-4),
-        64: (0.5 / 64, 9.5875e-5),
-        128: (0.5 / 128, 2.3968e-5),
-        256: (0.5 / 256, 5.9918e-6),
-        512: (0.5 / 512, 1.4979e-6),
-        1024: (0.5 / 1024, 3.7443e-7),
-        2048: (0.5 / 2048, 9.3602e-8)
+        2: (1 / 2, 3.918265e-1),
+        4: (1 / 4, 1.000796e-1),
+        8: (1 / 8, 2.469218e-2),
+        16: (1 / 16, 6.145642e-3),
+        32: (1 / 32, 1.534594e-3),
+        64: (1 / 64, 3.835311e-4),
+        128: (1 / 128, 9.587665e-5),
+        256: (1 / 256, 2.396875e-5),
+        512: (1 / 512, 5.992043e-6),
+        1024: (1 / 1024, 1.497961e-6),
+        2048: (1 / 2048, 3.744597e-7),
+        4096: (1 / 4096, 9.361220e-8)
+    }
+
+    for res in res_angles.keys():
+        angle_pairs = [(0,0), (res_angles[res][0], 0), (-res_angles[res][0], 0), (0, res_angles[res][1]),
+                       (0, -res_angles[res][1]), (res_angles[res][0]*0.5, 0.5*res_angles[res][1])]
+        for pair in angle_pairs:
+            theta, phi = loader_test.construct_angles(res, res, (pair[0]*90, pair[1]*90))
+            calc_angles = torch.tensor([[theta[0,0], phi[0,0]],
+                                        [theta[-1,0],phi[-1,0]],
+                                        [theta[0,-1], phi[0,-1]],
+                                        [theta[-1,-1], phi[-1,-1]]])
+            edge = 1.0 - res_angles[res][0]
+            angles = torch.tensor([[-edge, edge],
+                                   [edge, edge],
+                                   [-edge,-edge],
+                                   [edge,-edge]])
+            looks_unrotated = angle_to_vector(angles[:,0], angles[:,1])
+            rot_angles = torch.tensor([[pair[0], pair[1]]]).repeat((looks_unrotated.shape[0], 1))
+            looks_rotated = rotate_vector(looks_unrotated, rot_angles[:, 0], rot_angles[:, 1])
+
+            looks2 = angle_to_vector(calc_angles[:,0], calc_angles[:,1])
+            mse = torch.sum(torch.pow(looks_rotated.flatten() - looks2.flatten(), 2))
+            logging.info("MSE for {} {}: {}".format(res, pair, mse))
+
+
+def main_search():
+    def get_theta(vec, phi_angle):
+        rot_angles = torch.tensor([[0.0, phi_angle]]).repeat((vec.shape[0], 1))
+        rotated_looks = rotate_vector(vec, rot_angles[:, 0], rot_angles[:, 1])
+        theta, phi = vector_to_angle(rotated_looks)
+        return theta
+
+    powers = {}
+    for pwr in range(1, 13, 1):
+        res = pow(2, pwr)
+        # logging.info("Searching for {}".format(res))
+        e = 1.0 - 1/res
+        angle = torch.tensor([[e,e]])
+        look = angle_to_vector(angle[:,0], angle[:,1])
+        point_a = 0.5/res * pow(2, -(pwr-1))
+        theta_a = get_theta(look, point_a)
+        point_b = 1.0/res * pow(2, -(pwr-1))
+        theta_b = get_theta(look, point_b)
+        searching = True
+        while searching:
+            ratio = (1 - theta_b) / (theta_a - theta_b)
+            point_x = ratio * point_a + (1 - ratio) * point_b
+            theta_x = get_theta(look, point_x)
+            if theta_x <= 1.0:
+                if theta_x >= (1 - 1e-8):
+                    powers[pwr] = point_x
+                    searching = False
+                else:
+                    point_a = point_x
+                    theta_a = theta_x
+            else:
+                if theta_x > theta_b:
+                    logging.error("new theta greater than theta_b?")
+                theta_b = theta_x
+                point_b = point_x
+
+        logging.info("{}: {:.6e}".format(res, powers[pwr][0]))
+
+
+def main_angles():
+    res_angles = {
+        2: (1 / 2, 3.918265e-1),
+        4: (1 / 4, 1.000796e-1),
+        8: (1 / 8, 2.469218e-2),
+        16: (1 / 16, 6.145642e-3),
+        32: (1 / 32, 1.534594e-3),
+        64: (1 / 64, 3.835311e-4),
+        128: (1 / 128, 9.587665e-5),
+        256: (1 / 256, 2.396875e-5),
+        512: (1 / 512, 5.992043e-6),
+        1024: (1 / 1024, 1.497961e-6),
+        2048: (1 / 2048, 3.744597e-7),
+        4096: (1 / 4096, 9.361220e-8)
     }
 
     for res in res_angles.keys():
@@ -1066,15 +1160,35 @@ def main():
         looks = angle_to_vector(angles[:,0], angles[:,1])
 
         combos = [i/10 for i in range(0, 11, 1)]
+        # combos = [0]
         for u in combos:
             rot_angles = torch.tensor([[-res_angles[res][0] * u, (1.0 - u) * res_angles[res][1]]]).repeat((looks.shape[0],1))
-            looks2 = rotate_vector(looks, rot_angles[:,0], rot_angles[:,1])
-            theta, phi = vector_to_angle(looks2)
+            rotated_looks = rotate_vector(looks, rot_angles[:,0], rot_angles[:,1])
+            theta, phi = vector_to_angle(rotated_looks)
             logging.info("For res {}, angle {:.8f}, {:.8f} => theta: {:.8f}, phi: {:.8f}".format(res, rot_angles[0][0],
                                                                                                  rot_angles[0][1],
                                                                                                  theta[0], phi[0]))
-            if theta[0] < -1.0:
-                logging.error("This one was too small!")
+            if torch.min(theta) < -1.0:
+                logging.error("This theta was too small!")
+            if torch.max(theta) > 1.0:
+                logging.error("This theta was too large!")
+            if torch.min(phi) < -1.0:
+                logging.error("This phi was too small!")
+            if torch.max(phi) > 1.0:
+                logging.error("This phi was too large!")
+
+            # rotated_looks_from_angles = angle_to_vector(theta, phi)
+            # rotated_looks_comparison = torch.mm(rotated_looks, rotated_looks_from_angles.transpose(1,0)).diag()
+            # min_rotated_comparison = torch.min(rotated_looks_comparison)
+            # max_rotated_comparison = torch.max(rotated_looks_comparison)
+            # logging.info("Min rotated look comparison: {}".format(min_rotated_comparison))
+            # logging.info("Max rotated look comparison: {}".format(max_rotated_comparison))
+            # reversed_looks = rotate_vector(rotated_looks_from_angles, -rot_angles[:,0], -rot_angles[:,1])
+            # original_looks_comparison = torch.mm(looks, reversed_looks.transpose(1,0)).diag()
+            # min_orig_comparison = torch.min(original_looks_comparison)
+            # max_orig_comparison = torch.max(original_looks_comparison)
+            # logging.info("Min original look comparison: {}".format(min_orig_comparison))
+            # logging.info("Max original look comparison: {}".format(max_orig_comparison))
 
 
 def main_old():

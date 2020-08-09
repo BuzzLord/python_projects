@@ -210,6 +210,7 @@ class ApplicationSiren:
             # positions, rotations = self.__generate_random_positions(1, 4)  # 32 1024
             # positions, rotations = self.__generate_random_positions(2, 2)  # 128 512
             # positions, rotations = self.__generate_random_positions(4, 1)  # 512 256
+            # positions, rotations = self.__generate_random_positions(4, 1)   # 512 512
             positions, rotations = self.__generate_random_positions(4, 4)   # 2048 256
             offset = positions[0][0]
             print("Eye offset=" + str(offset))
@@ -251,186 +252,6 @@ class ApplicationSiren:
             self.generate_next_scene = False
             self.__generate_next_scene(seed)
             self.activate_next_scene = True
-
-    def __print_position(self):
-        print("({:+0.5f},{:+0.5f},{:+0.5f},{:+0.6f},{:+0.6f}".format(self.camera_position[0] * 4,
-                                                                     (self.camera_position[1] - 1.5) * 3,
-                                                                     self.camera_position[2] * 3,
-                                                                     self.camera_yaw - 180.0,
-                                                                     self.camera_pitch))
-
-    def __keyboard_func(self, key, x, y):
-        if self.generation_mode:
-            if key == b'\x1b':
-                self.generation_mode = False
-                return
-
-        # print("Keyboard func saw: " + str(key))
-        speed = 0.0001
-        if key == b'\x1b':
-            sys.exit(0)
-        elif key == b'\x20':
-            self.render_warp = not self.render_warp
-        elif key == b'a':
-            dir = np.array([np.sin(np.deg2rad(self.camera_yaw - 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw - 90.0)), 0.0])
-            self.camera_position += speed * dir
-            self.__print_position()
-        elif key == b'd':
-            dir = np.array([np.sin(np.deg2rad(self.camera_yaw + 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw + 90.0)), 0.0])
-            self.camera_position += speed * dir
-            self.__print_position()
-        elif key == b'w':
-            dir = np.array([-np.sin(np.deg2rad(self.camera_yaw)), 0.0, -np.cos(np.deg2rad(self.camera_yaw)), 0.0])
-            self.camera_position += speed * dir
-            self.__print_position()
-        elif key == b's':
-            dir = np.array([np.sin(np.deg2rad(self.camera_yaw)), 0.0, np.cos(np.deg2rad(self.camera_yaw)), 0.0])
-            self.camera_position += speed * dir
-            self.__print_position()
-        elif key == b'e':
-            dir = np.array([0.0, 1.0, 0.0, 0.0])
-            self.camera_position += speed * dir
-            self.__print_position()
-        elif key == b'c':
-            dir = np.array([0.0, -1.0, 0.0, 0.0])
-            self.camera_position += speed * dir
-            self.__print_position()
-        elif key == b'A':
-            dir = np.array([np.sin(np.deg2rad(self.camera_yaw - 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw - 90.0)), 0.0])
-            self.camera_position += 100.0 * speed * dir
-            self.__print_position()
-        elif key == b'D':
-            dir = np.array([np.sin(np.deg2rad(self.camera_yaw + 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw + 90.0)), 0.0])
-            self.camera_position += 100.0 * speed * dir
-            self.__print_position()
-        elif key == b'W':
-            dir = np.array([-np.sin(np.deg2rad(self.camera_yaw)), 0.0, -np.cos(np.deg2rad(self.camera_yaw)), 0.0])
-            self.camera_position += 100.0 * speed * dir
-            self.__print_position()
-        elif key == b'S':
-            dir = np.array([np.sin(np.deg2rad(self.camera_yaw)), 0.0, np.cos(np.deg2rad(self.camera_yaw)), 0.0])
-            self.camera_position += 100.0 * speed * dir
-            self.__print_position()
-        elif key == b'E':
-            dir = np.array([0.0, 1.0, 0.0, 0.0])
-            self.camera_position += 100.0 * speed * dir
-            self.__print_position()
-        elif key == b'C':
-            dir = np.array([0.0, -1.0, 0.0, 0.0])
-            self.camera_position += 100.0 * speed * dir
-            self.__print_position()
-        elif key == b'.':
-            self.generate_next_scene = True
-        elif key == b',':
-            self.generate_next_scene = True
-            self.return_previous_scene = True
-        # elif key == b'z':
-        #     self.camera_offset = np.array([-0.03, 0.0, 0.0, 0.0], dtype=np.float32)
-        # elif key == b'x':
-        #     self.camera_offset = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        # elif key == b'c':
-        #     self.camera_offset = np.array([0.03, 0.0, 0.0, 0.0], dtype=np.float32)
-
-        elif key == b'p':
-            self.save_screenshot = True
-        elif key == b'g':
-            self.generation_mode = True
-
-    def __special_func(self, key, x, y):
-        states = glutGetModifiers()
-        if states & GLUT_ACTIVE_SHIFT:
-            d = 1.0
-        else:
-            d = 0.001
-        
-        #  print("Special func saw: " + str(key))
-        if key == GLUT_KEY_LEFT:
-            self.camera_yaw = (self.camera_yaw + d) % 360.0
-            self.__print_position()
-        elif key == GLUT_KEY_RIGHT:
-            self.camera_yaw = (self.camera_yaw - d) % 360.0
-            self.__print_position()
-        elif key == GLUT_KEY_UP:
-            self.camera_pitch = min(self.camera_pitch + d, 90.0)
-            self.__print_position()
-        elif key == GLUT_KEY_DOWN:
-            self.camera_pitch = max(self.camera_pitch - d, -90.0)
-            self.__print_position()
-
-    def __save_offset_screenshots(self, camera_offset, eye_offset, filename_tag, n_way_offset=0, save_cubemap=False):
-        """ camera_offset : random position around the main camera position
-            eye_offset : delta-x distance of right eye from the main camera position (for scaling)
-            filename_tag : tag to give the file for classifying the screenshot type
-            n_way_offset : 0,1,2 for the number of slight jittered images to make (for derivatives);
-                           0: single image,
-                           1: 0-way plus x+, y+, z+, u+ (camera yaw), v+ (camera pitch)
-                           2: 1-way plus x-, y-, z-, u-, v-
-            save_cubmap : whether to save five unwarped cubemap images per saved image (including jitters)
-        """
-        position_delta = self.position_delta
-        angle_delta = self.angle_delta
-
-        pos_offset = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        camera_direction = np.array([0.0, 0.0], dtype=np.float32)
-        tag = filename_tag + "00"
-        self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                               eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-        if n_way_offset > 0:
-            pos_offset = np.array([position_delta, 0.0, 0.0, 0.0], dtype=np.float32)
-            camera_direction = np.array([0.0, 0.0], dtype=np.float32)
-            tag = filename_tag + "xp"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            pos_offset = np.array([0.0, position_delta, 0.0, 0.0], dtype=np.float32)
-            tag = filename_tag + "yp"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            pos_offset = np.array([0.0, 0.0, position_delta, 0.0], dtype=np.float32)
-            tag = filename_tag + "zp"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            pos_offset = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            camera_direction = np.array([angle_delta, 0.0], dtype=np.float32)
-            tag = filename_tag + "up"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            camera_direction = np.array([0.0, angle_delta], dtype=np.float32)
-            tag = filename_tag + "vp"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-        if n_way_offset > 1:
-            pos_offset = np.array([-position_delta, 0.0, 0.0, 0.0], dtype=np.float32)
-            camera_direction = np.array([0.0, 0.0], dtype=np.float32)
-            tag = filename_tag + "xn"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            pos_offset = np.array([0.0, -position_delta, 0.0, 0.0], dtype=np.float32)
-            tag = filename_tag + "yn"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            pos_offset = np.array([0.0, 0.0, -position_delta, 0.0], dtype=np.float32)
-            tag = filename_tag + "zn"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            pos_offset = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-            camera_direction = np.array([-angle_delta, 0.0], dtype=np.float32)
-            tag = filename_tag + "un"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
-
-            camera_direction = np.array([0.0, -angle_delta], dtype=np.float32)
-            tag = filename_tag + "vn"
-            self.__save_screenshot(camera_offset, camera_offset=pos_offset, camera_direction=camera_direction,
-                                   eye_offset=eye_offset, filename_tag=tag, save_cubemap=save_cubemap)
 
     def __save_screenshot(self, camera_position, camera_offset=np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32),
                           camera_direction=np.array([0.0, 0.0], dtype=np.float32),
@@ -479,7 +300,7 @@ class ApplicationSiren:
                 file_path = os.path.join(save_path, cubemap_filename)
                 image.save(file_path, 'png')
 
-    def __generate_random_positions(self, num, count=1):
+    def __generate_random_positions(self, num, count=1, test_mode=False):
         """
         Splits each dimension into num*2 sections, then creates count position vectors in each.
         Also appends L,R images.
@@ -487,7 +308,10 @@ class ApplicationSiren:
         :param count: num images in each region
         :return: num*num*num*8 * count + 2 pos vectors
         """
-        eye_offset = np.random.uniform(0.015, 0.04)
+        if test_mode:
+            eye_offset = 0.025
+        else:
+            eye_offset = np.random.uniform(0.015, 0.04)
         positions = np.array([[eye_offset,0.0,0.0,0.0],[-eye_offset,0.0,0.0,0.0]], dtype=np.float32)
         rotations = np.array([[0.0,0.0],[0.0,0.0]], dtype=np.float32)
         x_bound = 4.0 * eye_offset
@@ -496,19 +320,32 @@ class ApplicationSiren:
         bounds_power = 1.0
 
         res_angles = {
-            2: (0.5 / 2, 1.000796e-1),
-            8: (0.5 / 8, 6.14564e-3),
-            32: (0.5 / 32, 3.8353e-4),
-            64: (0.5 / 64, 9.5875e-5),
-            128: (0.5 / 128, 2.3968e-5),
-            256: (0.5 / 256, 5.9918e-6),
-            512: (0.5 / 512, 1.4979e-6),
-            1024: (0.5 / 1024, 3.7443e-7),
-            2048: (0.5 / 2048, 9.3602e-8)
+            2:    (1 / 2,    3.918265e-1),
+            4:    (1 / 4,    1.000796e-1),
+            8:    (1 / 8,    2.469218e-2),
+            16:   (1 / 16,   6.145642e-3),
+            32:   (1 / 32,   1.534594e-3),
+            64:   (1 / 64,   3.835311e-4),
+            128:  (1 / 128,  9.587665e-5),
+            256:  (1 / 256,  2.396875e-5),
+            512:  (1 / 512,  5.992043e-6),
+            1024: (1 / 1024, 1.497961e-6),
+            2048: (1 / 2048, 3.744597e-7),
+            4096: (1 / 4096, 9.361220e-8)
         }
 
-        u_bound = 180.0 * res_angles[self.window_size[0]][0]
-        v_bound = 180.0 * res_angles[self.window_size[1]][1]
+        u_bound = 90.0 * res_angles[self.window_size[0]][0]
+        v_bound = 90.0 * res_angles[self.window_size[1]][1]
+
+        if test_mode:
+            s = 2.0 * eye_offset
+            pos = [(0,0,0),(s,0,0),(-s,0,0),(0,s,0),(0,-s,0),(0,0,s),(0,0,-s)]
+            angles = [(0,0),(-1,0),(1,0),(0,1),(0,-1),(0.5,0.5),(-0.5,0.5),(0.5,-0.5),(-0.5,-0.5)]
+            for x, y, z in pos:
+                for u, v in angles:
+                    positions = np.append(positions, np.array([[x, y, z, 0.0]], dtype=np.float32), axis=0)
+                    rotations = np.append(rotations, np.array([[u * u_bound, v * v_bound]], dtype=np.float32), axis=0)
+            return positions, rotations
 
         x_range = np.linspace(0.0, 1.0, num=num + 1)
         y_range = np.linspace(0.0, 1.0, num=num + 1)
@@ -615,6 +452,115 @@ class ApplicationSiren:
                         rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
 
         return positions, rotations
+
+    def __print_position(self):
+        print("({:+0.5f},{:+0.5f},{:+0.5f},{:+0.6f},{:+0.6f}".format(self.camera_position[0] * 4,
+                                                                     (self.camera_position[1] - 1.5) * 3,
+                                                                     self.camera_position[2] * 3,
+                                                                     self.camera_yaw - 180.0,
+                                                                     self.camera_pitch))
+
+    def __keyboard_func(self, key, x, y):
+        if self.generation_mode:
+            if key == b'\x1b':
+                self.generation_mode = False
+                return
+
+        # print("Keyboard func saw: " + str(key))
+        speed = 0.0001
+        if key == b'\x1b':
+            sys.exit(0)
+        elif key == b'\x20':
+            self.render_warp = not self.render_warp
+        elif key == b'a':
+            dir = np.array(
+                [np.sin(np.deg2rad(self.camera_yaw - 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw - 90.0)), 0.0])
+            self.camera_position += speed * dir
+            self.__print_position()
+        elif key == b'd':
+            dir = np.array(
+                [np.sin(np.deg2rad(self.camera_yaw + 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw + 90.0)), 0.0])
+            self.camera_position += speed * dir
+            self.__print_position()
+        elif key == b'w':
+            dir = np.array([-np.sin(np.deg2rad(self.camera_yaw)), 0.0, -np.cos(np.deg2rad(self.camera_yaw)), 0.0])
+            self.camera_position += speed * dir
+            self.__print_position()
+        elif key == b's':
+            dir = np.array([np.sin(np.deg2rad(self.camera_yaw)), 0.0, np.cos(np.deg2rad(self.camera_yaw)), 0.0])
+            self.camera_position += speed * dir
+            self.__print_position()
+        elif key == b'e':
+            dir = np.array([0.0, 1.0, 0.0, 0.0])
+            self.camera_position += speed * dir
+            self.__print_position()
+        elif key == b'c':
+            dir = np.array([0.0, -1.0, 0.0, 0.0])
+            self.camera_position += speed * dir
+            self.__print_position()
+        elif key == b'A':
+            dir = np.array(
+                [np.sin(np.deg2rad(self.camera_yaw - 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw - 90.0)), 0.0])
+            self.camera_position += 100.0 * speed * dir
+            self.__print_position()
+        elif key == b'D':
+            dir = np.array(
+                [np.sin(np.deg2rad(self.camera_yaw + 90.0)), 0.0, np.cos(np.deg2rad(self.camera_yaw + 90.0)), 0.0])
+            self.camera_position += 100.0 * speed * dir
+            self.__print_position()
+        elif key == b'W':
+            dir = np.array([-np.sin(np.deg2rad(self.camera_yaw)), 0.0, -np.cos(np.deg2rad(self.camera_yaw)), 0.0])
+            self.camera_position += 100.0 * speed * dir
+            self.__print_position()
+        elif key == b'S':
+            dir = np.array([np.sin(np.deg2rad(self.camera_yaw)), 0.0, np.cos(np.deg2rad(self.camera_yaw)), 0.0])
+            self.camera_position += 100.0 * speed * dir
+            self.__print_position()
+        elif key == b'E':
+            dir = np.array([0.0, 1.0, 0.0, 0.0])
+            self.camera_position += 100.0 * speed * dir
+            self.__print_position()
+        elif key == b'C':
+            dir = np.array([0.0, -1.0, 0.0, 0.0])
+            self.camera_position += 100.0 * speed * dir
+            self.__print_position()
+        elif key == b'.':
+            self.generate_next_scene = True
+        elif key == b',':
+            self.generate_next_scene = True
+            self.return_previous_scene = True
+        # elif key == b'z':
+        #     self.camera_offset = np.array([-0.03, 0.0, 0.0, 0.0], dtype=np.float32)
+        # elif key == b'x':
+        #     self.camera_offset = np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        # elif key == b'c':
+        #     self.camera_offset = np.array([0.03, 0.0, 0.0, 0.0], dtype=np.float32)
+
+        elif key == b'p':
+            self.save_screenshot = True
+        elif key == b'g':
+            self.generation_mode = True
+
+    def __special_func(self, key, x, y):
+        states = glutGetModifiers()
+        if states & GLUT_ACTIVE_SHIFT:
+            d = 1.0
+        else:
+            d = 0.001
+
+        #  print("Special func saw: " + str(key))
+        if key == GLUT_KEY_LEFT:
+            self.camera_yaw = (self.camera_yaw + d) % 360.0
+            self.__print_position()
+        elif key == GLUT_KEY_RIGHT:
+            self.camera_yaw = (self.camera_yaw - d) % 360.0
+            self.__print_position()
+        elif key == GLUT_KEY_UP:
+            self.camera_pitch = min(self.camera_pitch + d, 90.0)
+            self.__print_position()
+        elif key == GLUT_KEY_DOWN:
+            self.camera_pitch = max(self.camera_pitch - d, -90.0)
+            self.__print_position()
 
     @staticmethod
     def start():
