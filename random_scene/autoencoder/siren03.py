@@ -146,9 +146,10 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                                join(args.model_path,
                                     "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))),
                                nrow=1)
-            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e})'.format(
-                epoch, image_idx + 1, len(train_loader), 100. * (image_idx + 1) / len(train_loader), mean(loss_data),
-                stdev(loss_data)))
+
+            m, s, b = get_loss_stats(loss_data)
+            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e}, {:.3e})'.format(
+                epoch, image_idx + 1, len(train_loader), 100. * (image_idx + 1) / len(train_loader), m, s, b))
 
 
 def test(args, model, device, test_loader, criterion, epoch):
@@ -186,7 +187,8 @@ def test(args, model, device, test_loader, criterion, epoch):
                            nrow=1)
 
             if len(test_loss) > 1:
-                loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
+                m, s, b = get_loss_stats(test_loss)
+                loss_value = "{:.3e} ({:.3e}, {:.3e})".format(m, s, b)
             else:
                 loss_value = "{:.3e}".format(test_loss[0])
             logging.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
@@ -198,6 +200,20 @@ def convert_image(data, dims):
     converted = data.transpose(dim0=0, dim1=1).view((1, 3, dims[0], dims[1]))
     converted = ((converted * 0.5) + 0.5).clamp(0, 1)
     return converted
+
+
+def get_loss_stats(loss):
+    """ Returns mean, standard deviation, and sample skewness. """
+    n = len(loss)
+    if n == 0:
+        return 0, 0, 0
+    elif n == 1:
+        return loss[0], 0, 0
+    else:
+        c = mean(loss)
+        s = stdev(loss, xbar=c)
+        b = (sum((x - c) ** 3 for x in loss) / n) / pow(s, 3)
+        return c, s, b
 
 
 def arg_parser(input_args, model_number="03"):

@@ -15,6 +15,8 @@ import logging
 from projection import Projection
 
 
+
+
 class ExpandPosition(object):
     """Expand the 3x1 position vector into a 3xHxW image/numpy array."""
 
@@ -469,6 +471,34 @@ class RandomSceneDataset(Dataset):
 
 # -- SIREN ------------------------
 
+pi_2 = 1.5707963267948966192313216916398
+
+
+def angle_to_vector(theta, phi):
+    u = pi_2 * theta
+    v = pi_2 * phi
+    sin_u, cos_u = torch.sin(u), torch.cos(u)
+    sin_v, cos_v = torch.sin(v), torch.cos(v)
+    return torch.stack((sin_u * cos_v, sin_v, -cos_u * cos_v), dim=1)
+
+
+def rotate_vector(vec, theta, phi):
+    u = pi_2 * theta
+    v = pi_2 * phi
+    sin_u, cos_u = torch.sin(u), torch.cos(u)
+    sin_v, cos_v = torch.sin(v), torch.cos(v)
+    x = vec[:, 0] * cos_u + vec[:, 1] * sin_u * sin_v - vec[:, 2] * sin_u * cos_v
+    y = vec[:, 1] * cos_v - vec[:, 2] * sin_v
+    z = vec[:, 0] * sin_u + vec[:, 1] * cos_u * sin_v + vec[:, 2] * cos_u * cos_v
+    return torch.stack((x, y, z), dim=1)
+
+
+def vector_to_angle(look):
+    phi = torch.asin(look[:,1]) / pi_2
+    theta = torch.atan2(look[:,0], -look[:,2]) / pi_2
+    return theta, phi
+
+
 class RandomSceneSirenFileListLoader(Dataset):
     """Random scene dataset."""
 
@@ -552,7 +582,7 @@ class RandomSceneSirenFileListLoader(Dataset):
             pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
             rot_group = (0.0, 0.0)
         elif vg.group(1) == "4":
-            fg = match("ss([1234])_([0-9]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([lrg]).png",
+            fg = match("ss([1234])_([0-9]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9e.+-]*)_([0-9e.+-]*)_([lrg]).png",
                        basename(self.file_names[idx]))
             pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
             rot_group = (float(fg.group(6)), float(fg.group(7)))
@@ -576,21 +606,26 @@ class RandomSceneSirenFileListLoader(Dataset):
         image = image[:, :, 0:3][:, :, ::-1]
         image_cuda = torch.from_numpy(image.copy()).to(self.device, dtype=torch.float32)
 
-        pos = torch.ones(image.shape, dtype=torch.float32)
-        pos[:, :, 0].mul_(pos_group[0] * self.pos_scale[0])
-        pos[:, :, 1].mul_(pos_group[1] * self.pos_scale[1])
-        pos[:, :, 2].mul_(pos_group[2] * self.pos_scale[2])
+        position = torch.ones(image.shape, device=self.device, dtype=torch.float32)
+        position[:, :, 0].mul_(pos_group[0] * self.pos_scale[0])
+        position[:, :, 1].mul_(pos_group[1] * self.pos_scale[1])
+        position[:, :, 2].mul_(pos_group[2] * self.pos_scale[2])
 
-        theta = torch.linspace(-1.0 + (1 / float(image.shape[0])), 1.0 - (1 / float(image.shape[0])),
-                               image.shape[0], dtype=torch.float32)
-        theta = theta + rot_group[0] / 90
-        theta = (theta.unsqueeze(1) * torch.ones(image.shape[0])).transpose(dim0=0, dim1=1)
-        phi = torch.linspace(1.0 - (1 / float(image.shape[1])), -1.0 + (1 / float(image.shape[1])),
-                             image.shape[1], dtype=torch.float32)
-        phi = phi + rot_group[1] / 90
-        phi = (phi.unsqueeze(1) * torch.ones(image.shape[1]))
-        inputs = torch.cat((pos, theta.unsqueeze(2), phi.unsqueeze(2)), dim=2)
-        inputs = inputs.to(self.device, dtype=torch.float32)
+        dim0 = image.shape[0]
+        dim1 = image.shape[1]
+        theta_base = torch.linspace(-1.0 + (1 / float(dim0)), 1.0 - (1 / float(dim0)), dim0,
+                                    device=self.device, dtype=torch.float32).repeat((dim1, 1)).transpose(0, 1)
+        phi_base = torch.linspace(1.0 - (1 / float(dim1)), -1.0 + (1 / float(dim1)), dim1,
+                                  device=self.device, dtype=torch.float32).repeat((dim0, 1))
+
+        vector = angle_to_vector(theta_base.reshape(dim0*dim1), phi_base.reshape(dim0*dim1))
+        rotation = torch.tensor([[rot_group[0]/90.0, rot_group[1]/90.0]],
+                                device=self.device, dtype=torch.float32).repeat((vector.shape[0], 1))
+
+        rotated_vector = rotate_vector(vector, rotation[:,0], rotation[:,1])
+        theta, phi = vector_to_angle(rotated_vector)
+
+        inputs = torch.cat((position, theta.reshape(dim0, dim1, 1), phi.reshape(dim0, dim1, 1)), dim=2)
 
         return { "filename": self.file_names[idx],
                  "image": image_cuda,
@@ -619,11 +654,6 @@ class RandomSceneSirenSampleLoader:
         self.max_t = max_t
 
         self.dims = []
-
-        self.x_row = {}
-        self.y_row = {}
-        self.zeros = {}
-        self.vec = {}
 
         index_list = []
         image_list = []
@@ -676,49 +706,7 @@ class RandomSceneSirenSampleLoader:
 
     def vector_transform(self, inputs):
         position = inputs[:, 0:3]
-
-        # Take sin values for theta/phi look angle, get cos of them
-        u = 0.5 * np.pi * inputs[:, 3]
-        v = 0.5 * np.pi * inputs[:, 4]
-        sin_u, cos_u = torch.sin(u), torch.cos(u)
-        sin_v, cos_v = torch.sin(v), torch.cos(v)
-
-        # Construct rotation matrices
-        # Construct and cache the common rows tensors zeros, y_row = [zeros, ones, zeros], x_row = [ones, zeros, zeros]
-        if sin_u.shape in self.zeros:
-            zeros = self.zeros[sin_u.shape]
-        else:
-            zeros = torch.zeros(sin_u.shape, device=self.device)
-            self.zeros[sin_u.shape] = zeros
-
-        if sin_u.shape in self.y_row:
-            y_row = self.y_row[sin_u.shape]
-        else:
-            ones = torch.ones(sin_u.shape, device=self.device)
-            y_row = torch.stack((zeros, ones, zeros), dim=1)
-            self.y_row[sin_u.shape] = y_row
-
-        if sin_u.shape in self.x_row:
-            x_row = self.x_row[sin_u.shape]
-        else:
-            ones = torch.ones(sin_u.shape, device=self.device)
-            x_row = torch.stack((ones, zeros, zeros), dim=1)
-            self.x_row[sin_u.shape] = x_row
-
-        rot_y = torch.stack((torch.stack((cos_u, zeros, sin_u), dim=1), y_row,
-                             torch.stack((-sin_u, zeros, cos_u), dim=1)), dim=-1)
-        rot_x = torch.stack((x_row, torch.stack((zeros, cos_v, sin_v), dim=1),
-                             torch.stack((zeros, -sin_v, cos_v), dim=1)), dim=-1)
-        rot = torch.matmul(rot_y, rot_x)
-
-        # Rotate a forward vector by the rot matrices. Cache vec for later use.
-        if sin_u.shape in self.vec:
-            vec = self.vec[sin_u.shape]
-        else:
-            vec = (torch.ones((sin_u.shape[0], 1), device=self.device) *
-                   torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32, device=self.device)).unsqueeze(-1)
-            self.vec[sin_u.shape] = vec
-        look = torch.matmul(rot, vec).squeeze(-1)
+        look = angle_to_vector(inputs[:, 3], inputs[:, 4])
 
         # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
         inv_look = 1 / look
@@ -779,23 +767,25 @@ class SirenSampleRandomizePosition(object):
         sin_u, cos_u = torch.sin(u), torch.cos(u)
         sin_v, cos_v = torch.sin(v), torch.cos(v)
 
-        # Construct rotation matrices
-        zeros_u = torch.zeros(sin_u.shape, device=device)
-        zeros_v = torch.zeros(sin_v.shape, device=device)
-        ones_u = torch.ones(sin_u.shape, device=device)
-        ones_v = torch.ones(sin_v.shape, device=device)
-        rot_y = torch.stack((torch.stack((cos_u, zeros_u, sin_u), dim=1),
-                             torch.stack((zeros_u, ones_u, zeros_u), dim=1),
-                             torch.stack((-sin_u, zeros_u, cos_u), dim=1)), dim=-1)
-        rot_x = torch.stack((torch.stack((ones_v, zeros_v, zeros_v), dim=1),
-                             torch.stack((zeros_v, cos_v, sin_v), dim=1),
-                             torch.stack((zeros_v, -sin_v, cos_v), dim=1)), dim=-1)
-        rot = torch.matmul(rot_y, rot_x)
+        # # Construct rotation matrices
+        # zeros_u = torch.zeros(sin_u.shape, device=device)
+        # zeros_v = torch.zeros(sin_v.shape, device=device)
+        # ones_u = torch.ones(sin_u.shape, device=device)
+        # ones_v = torch.ones(sin_v.shape, device=device)
+        # rot_y = torch.stack((torch.stack((cos_u, zeros_u, sin_u), dim=1),
+        #                      torch.stack((zeros_u, ones_u, zeros_u), dim=1),
+        #                      torch.stack((-sin_u, zeros_u, cos_u), dim=1)), dim=-1)
+        # rot_x = torch.stack((torch.stack((ones_v, zeros_v, zeros_v), dim=1),
+        #                      torch.stack((zeros_v, cos_v, sin_v), dim=1),
+        #                      torch.stack((zeros_v, -sin_v, cos_v), dim=1)), dim=-1)
+        # rot = torch.matmul(rot_y, rot_x)
+        #
+        # # Rotate a forward vector by the rot matrices
+        # vec = (torch.ones((sin_u.shape[0], 1), device=device) *
+        #        torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32, device=device)).unsqueeze(-1)
+        # look = torch.matmul(rot, vec).squeeze(-1)
 
-        # Rotate a forward vector by the rot matrices
-        vec = (torch.ones((sin_u.shape[0], 1), device=device) *
-               torch.tensor([[0.0, 0.0, -1.0]], dtype=torch.float32, device=device)).unsqueeze(-1)
-        look = torch.matmul(rot, vec).squeeze(-1)
+        look = torch.stack((sin_u * cos_v, sin_v, -cos_u * cos_v), dim=1)
 
         # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
         inv_look = 1 / look
@@ -825,18 +815,7 @@ class SirenSampleRandomizePosition(object):
         sin_u, cos_u = torch.sin(u), torch.cos(u)
         sin_v, cos_v = torch.sin(v), torch.cos(v)
 
-        # Construct rotation matrices
-        rot_y = torch.tensor([[cos_u, 0, sin_u],
-                              [0, 1, 0],
-                              [-sin_u, 0, cos_u]], dtype=torch.float32)
-        rot_x = torch.tensor([[1, 0, 0],
-                              [0, cos_v, sin_v],
-                              [0, -sin_v, cos_v]], dtype=torch.float32)
-        rot = torch.matmul(rot_y, rot_x)
-
-        # Rotate a forward vector by the rot matrices
-        vec = torch.tensor([0.0, 0.0, -1.0], dtype=torch.float32).unsqueeze(-1)
-        look = torch.matmul(rot, vec).squeeze(-1)
+        look = np.array([sin_u * cos_v, sin_v, -cos_u * cos_v], dtype=np.float32).transpose((1, 0))
 
         # Do a axis-aligned bounding box calculation to get nearest intersection in look dir, and behind.
         inv_look = 1 / look
@@ -1052,17 +1031,50 @@ class RandomSceneSirenSampleSetList(Dataset):
         return sample
 
 
-def main():
+def main_transform():
     def deg2norm(angle):
         return angle / 90
 
     sample = {"inputs": torch.from_numpy(np.array([[-0.5,0,0.5,deg2norm(45),0],[0,0,0,deg2norm(45),0],
                                                    [0,-0.4330127,0.75,0,deg2norm(30)],[0,0,0,0,deg2norm(30)]], dtype=np.float32)),
               "outputs": torch.from_numpy(np.zeros((2,3), dtype=np.float32))}
-    #single_sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
-    #                 "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
+    # single_sample = {"inputs": torch.from_numpy(np.array([0,-0.4330127,0.75,0,0.5], dtype=np.float32)),
+    #                  "outputs": torch.from_numpy(np.zeros((3,), dtype=np.float32))}
     transform = SirenSampleRandomizePosition(max_t=10.0)
     transform.vector_transform(sample["inputs"])
+
+
+def main():
+    res_angles = {
+        2: (0.5 / 2, 1.000796e-1),
+        8: (0.5 / 8, 6.14564e-3),
+        32: (0.5 / 32, 3.8353e-4),
+        64: (0.5 / 64, 9.5875e-5),
+        128: (0.5 / 128, 2.3968e-5),
+        256: (0.5 / 256, 5.9918e-6),
+        512: (0.5 / 512, 1.4979e-6),
+        1024: (0.5 / 1024, 3.7443e-7),
+        2048: (0.5 / 2048, 9.3602e-8)
+    }
+
+    for res in res_angles.keys():
+        # res = 64
+        edge = 1.0 - res_angles[res][0]
+        angles = torch.tensor([[-edge, edge], [0.0, edge], [edge, edge],
+                               [-edge, 0.0],  [0.0, 0.0],  [edge, 0.0],
+                               [-edge,-edge], [0.0,-edge], [edge,-edge]])
+        looks = angle_to_vector(angles[:,0], angles[:,1])
+
+        combos = [i/10 for i in range(0, 11, 1)]
+        for u in combos:
+            rot_angles = torch.tensor([[-res_angles[res][0] * u, (1.0 - u) * res_angles[res][1]]]).repeat((looks.shape[0],1))
+            looks2 = rotate_vector(looks, rot_angles[:,0], rot_angles[:,1])
+            theta, phi = vector_to_angle(looks2)
+            logging.info("For res {}, angle {:.8f}, {:.8f} => theta: {:.8f}, phi: {:.8f}".format(res, rot_angles[0][0],
+                                                                                                 rot_angles[0][1],
+                                                                                                 theta[0], phi[0]))
+            if theta[0] < -1.0:
+                logging.error("This one was too small!")
 
 
 def main_old():
