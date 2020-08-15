@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision.utils import save_image
-import dataloader02 as dl
+import dataloader04 as dl
 
 
 class ModelLoss(nn.Module):
@@ -49,8 +49,8 @@ class Siren(nn.Module):
         if pos_encoding_levels is None:
             self.pos_encoding_levels = (4, 4)
         self.pos_encoding_levels = pos_encoding_levels
-        # positional encoding (sin,cos) harmonics for five coords; 0 is position, 1 is rotation
-        input_size = 2 * 3 * pos_encoding_levels[0] + 2 * 2 * pos_encoding_levels[1]
+        # positional encoding (sin,cos) harmonics for six coords; 0 is position, 1 is orientation
+        input_size = 2 * 3 * pos_encoding_levels[0] + 2 * 3 * pos_encoding_levels[1]
         output_size = 3
 
         self.w0_initial = 30.0
@@ -77,14 +77,27 @@ class Siren(nn.Module):
         layers.append(nn.Sequential(self.construct_layer(hidden_size, output_size, activation=LinearActivation())))
         return nn.Sequential(OrderedDict([("layer{:d}".format(i + 1), layer) for i, layer in enumerate(layers)]))
 
+    def expand_pos_encoding(self, inputs):
+        pmult = math.pi * torch.pow(2, torch.linspace(0, self.pos_encoding_levels[0]-1, self.pos_encoding_levels[0],
+                                                      device=inputs.device))
+        pos = inputs[:, 0:3]
+        u = torch.bmm(pmult.unsqueeze(1).repeat(inputs.shape[0], 1, 1), pos.unsqueeze(1))
+        u = u.view((inputs.shape[0], 3 * self.pos_encoding_levels[0]))
+        sin_u = torch.sin(u)
+        cos_u = torch.cos(u)
+
+        rmult = math.pi * torch.pow(2, torch.linspace(0, self.pos_encoding_levels[1]-1, self.pos_encoding_levels[1],
+                                                      device=inputs.device))
+        rot = inputs[:, 3:6]
+        v = torch.bmm(rmult.unsqueeze(1).repeat(inputs.shape[0], 1, 1), rot.unsqueeze(1))
+        v = v.view((inputs.shape[0], 3 * self.pos_encoding_levels[1]))
+        sin_v = torch.sin(v)
+        cos_v = torch.cos(v)
+        x = torch.cat((sin_u, cos_u, sin_v, cos_v), dim=1)
+        return x
+
     def forward(self, inputs):
-        xp = torch.cat([torch.cat((torch.sin(math.pow(2,i)*math.pi*inputs[:, 0:3]),
-                                  torch.cos(math.pow(2,i)*math.pi*inputs[:, 0:3])),
-                                  dim=1) for i in range(self.pos_encoding_levels[0])], dim=1)
-        xr = torch.cat([torch.cat((torch.sin(math.pow(2, i) * math.pi * inputs[:, 3:5]),
-                                  torch.cos(math.pow(2, i) * math.pi * inputs[:, 3:5])),
-                                  dim=1) for i in range(self.pos_encoding_levels[1])], dim=1)
-        x = torch.cat((xp, xr), dim=1)
+        x = self.expand_pos_encoding(inputs)
         out = self.network(x)
         return out
 
@@ -128,19 +141,25 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
 
                     data_actual = convert_image(sample["outputs"].cpu(), sample["dims"])
                     data_output = convert_image(data_output, sample["dims"])
-                    images = torch.cat((data_actual, data_output), dim=3)
+                    if args.append_orientation:
+                        data_input_img = convert_image(sample["inputs"][:,3:6].cpu(), sample["dims"])
+                        images = torch.cat((data_input_img, data_actual, data_output), dim=3)
+                    else:
+                        images = torch.cat((data_actual, data_output), dim=3)
                     save_image(images,
                                join(args.model_path,
                                     "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))),
                                nrow=1)
-            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e})'.format(
-                epoch, image_idx + 1, len(train_loader), 100. * (image_idx + 1) / len(train_loader), mean(loss_data),
-                stdev(loss_data)))
+
+            m, s, b = get_loss_stats(loss_data)
+            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e}, {:.3e})'.format(
+                epoch, image_idx + 1, len(train_loader), 100. * (image_idx + 1) / len(train_loader), m, s, b))
 
 
 def test(args, model, device, test_loader, criterion, epoch):
     model.eval()
     render_vector_count = 512 * 512
+    img_save_modulus = max(1, int(len(test_loader)/6))
     with torch.no_grad():
         test_set = test_loader.dataset
         test_loss = []
@@ -154,7 +173,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                 data_output = model(data_input)
                 test_loss.append(criterion(data_output, data_actual).item())
 
-            if image_idx % int(len(test_loader)/6) == 0:
+            if image_idx % img_save_modulus == 0:
                 sample = data_loader.get_in_order_sample()
                 data_input = sample["inputs"]
                 data_output = torch.zeros((0, 3), dtype=torch.float32)
@@ -168,11 +187,12 @@ def test(args, model, device, test_loader, criterion, epoch):
                 images = torch.cat((sample_actual, sample_output), dim=3)
                 save_image(images,
                            join(args.model_path,
-                                "test{:02d}-{:02d}.png".format(epoch, int(image_idx/int(len(test_loader)/6)))),
+                                "test{:02d}-{:02d}.png".format(epoch, int(image_idx/img_save_modulus))),
                            nrow=1)
 
             if len(test_loss) > 1:
-                loss_value = "{:.3e} ({:.3e})".format(mean(test_loss), stdev(test_loss))
+                m, s, b = get_loss_stats(test_loss)
+                loss_value = "{:.3e} ({:.3e}, {:.3e})".format(m, s, b)
             else:
                 loss_value = "{:.3e}".format(test_loss[0])
             logging.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
@@ -186,7 +206,21 @@ def convert_image(data, dims):
     return converted
 
 
-def arg_parser(input_args, model_number):
+def get_loss_stats(loss):
+    """ Returns mean, standard deviation, and sample skewness. """
+    n = len(loss)
+    if n == 0:
+        return 0, 0, 0
+    elif n == 1:
+        return loss[0], 0, 0
+    else:
+        c = mean(loss)
+        s = stdev(loss, xbar=c)
+        b = (sum((x - c) ** 3 for x in loss) / n) / pow(s, 3)
+        return c, s, b
+
+
+def arg_parser(input_args, model_number="04"):
     parser = argparse.ArgumentParser(description='PyTorch SIREN Model ' + model_number + ' Experiment')
     parser.add_argument('--batch-size', type=int, default=2048, metavar='N',
                         help='input batch size for training (default: 2048)')
@@ -223,6 +257,8 @@ def arg_parser(input_args, model_number):
                         help='Randomize position number of steps to max_t (default: 5)')
     parser.add_argument('--random-max-t', type=float, default=0.5, metavar='T',
                         help='Randomize position max t (default: 0.5)')
+    parser.add_argument('--importance', type=float, metavar='IMP',
+                        help='Importance sampling scalar')
 
     parser.add_argument('--no-cuda', action='store_true', default=False,
                         help='disables CUDA training')
@@ -252,7 +288,9 @@ def arg_parser(input_args, model_number):
     parser.add_argument('--rot-encoding', type=int, default=4, metavar='LR',
                         help='Rotational encoding harmonics (default: 4)')
     parser.add_argument('--print-statistics', action='store_true', default=False,
-                        help='print out layer weight statistics periodically')
+                        help='Print out layer weight statistics periodically')
+    parser.add_argument('--append-orientation', action='store_true', default=False,
+                        help='Append view orientation image to training output images')
     args = parser.parse_args(args=input_args)
 
     if args.model_path is None:
@@ -264,7 +302,7 @@ def arg_parser(input_args, model_number):
 
 def main(custom_args=None):
     # Training settings
-    model_number = "02"
+    model_number = "04"
     args = arg_parser(custom_args, model_number)
 
     if not os.path.exists(args.model_path):
@@ -325,7 +363,7 @@ def get_data_loaders(args, device):
     train_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
                                                   batch_size=args.batch_size, num_workers=args.num_workers,
                                                   pin_memory=(not args.dont_pin_memory), shuffle=True,
-                                                  pos_scale=position_scale, importance=1.0, device=device)
+                                                  pos_scale=position_scale, importance=args.importance, device=device)
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.img_batch_size, shuffle=True,
                                                collate_fn=train_set.collate_fn)
 

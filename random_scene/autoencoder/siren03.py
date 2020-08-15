@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torchvision.utils import save_image
-import dataloader as dl
+import dataloader03 as dl
 
 
 class ModelLoss(nn.Module):
