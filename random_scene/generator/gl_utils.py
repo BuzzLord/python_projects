@@ -100,6 +100,80 @@ colormod_fragment_shader_src = """
                 //FragColor = oColor;
             }"""
 
+warp_frag_debug_shader_src = """
+            #version 150
+            uniform mat3 RotateMatrix;
+            uniform sampler2D Texture0;  // color 0
+            uniform sampler2D Texture2;  // color 1
+            uniform sampler2D Texture4;  // color 2
+            uniform sampler2D Texture6;  // color 3
+            uniform sampler2D Texture8;  // color 4
+            in      vec4      oColor;
+            in      vec2      oTexCoord;
+            in      vec3      oNormal;
+            out     vec4      FragColor;
+            vec2 sampleCube(const vec3 v,out float faceIndex) {
+                vec3 vAbs = abs(v);
+                float ma;
+                vec2 uv;
+                if (vAbs.z >= vAbs.x && vAbs.z >= vAbs.y) {
+                    faceIndex = v.z < 0.0 ? 5.0 : 4.0;
+                    ma = 0.5 / vAbs.z;
+                    uv = vec2(v.z < 0.0 ? -v.x : v.x, -v.y);
+                } else if (vAbs.y >= vAbs.x) {
+                    faceIndex = v.y < 0.0 ? 3.0 : 2.0;
+                    ma = 0.5 / vAbs.y;
+                    uv = vec2(v.x, v.y < 0.0 ? -v.z : v.z);
+                } else {
+                    faceIndex = v.x < 0.0 ? 1.0 : 0.0;
+                    ma = 0.5 / vAbs.x;
+                    uv = vec2(v.x < 0.0 ? v.z : -v.z, -v.y);
+                }
+                return uv * ma + 0.5;
+            }
+            vec3 toSphere(const vec2 texCoord) {
+                vec2 theta = 1.570796 * ((texCoord) * 2.0 - vec2(1.0));
+                float cosphi = cos(theta.y);
+                vec3 v = vec3(cosphi * sin(-theta.x), sin(theta.y), cosphi * cos(-theta.x));
+                return v;
+            }
+            vec4 sampleCubeColor(vec3 v) {
+                vec4 c;
+                float faceIndex;
+                vec2 uv = sampleCube(v, faceIndex);
+                if (faceIndex == 0.0) {
+                    c = texture2D(Texture4, uv);
+                } else if (faceIndex == 1.0) {
+                    c = texture2D(Texture2, uv);
+                } else if (faceIndex == 2.0) {
+                    c = texture2D(Texture8, uv);
+                } else if (faceIndex == 3.0) {
+                    c = texture2D(Texture6, uv);
+                } else if (faceIndex == 4.0) {
+                    c = texture2D(Texture0, uv);
+                } else {
+                    c = vec4(0.0);
+                }
+                return c;
+            }
+            vec4 sampleViewVector(vec2 TexCoord) {
+                vec3 rotatedVec = RotateMatrix * toSphere(TexCoord);
+                //vec3 rotatedVec = toSphere(TexCoord);
+                return vec4(mod(rotatedVec * 10.0, 1.0), 1.0);
+                //return vec4(rotatedVec * 0.5 + 0.5, 1.0);
+                //return sampleCubeColor(rotatedVec);
+            }
+            void main() {
+                //vec4 color = sampleCubeColor(toSphere(oTexCoord));
+                vec4 color = sampleViewVector(oTexCoord);
+                //vec4 color = sampleFivePoints(oTexCoord);
+                //vec4 color = sampleNinePointsRegular(oTexCoord);
+                //vec4 color = sampleTwentyOnePoints(oTexCoord);
+                //vec4 depth = pow(sampleDepth(oTexCoord), vec4(8.0)); 
+                //FragColor = vec4(color.rgb, depth.r);
+                FragColor = vec4(color.rgb, 1.0);
+            }"""
+
 warp_frag_shader_src = """
             #version 150
             uniform sampler2D Texture0;  // color 0
@@ -112,6 +186,8 @@ warp_frag_shader_src = """
             uniform sampler2D Texture7;  // depth 3
             uniform sampler2D Texture8;  // color 4
             uniform sampler2D Texture9;  // depth 4
+            uniform float Resolution;
+            
             in      vec4      oColor;
             in      vec2      oTexCoord;
             in      vec3      oNormal;
@@ -182,11 +258,11 @@ warp_frag_shader_src = """
                 float scale = 1.0 / sqrt(1.0 + d.s*d.s + d.t*d.t);
                 return pow(c, vec4(scale));
             }
-            vec4 sampleFivePoints(vec2 TexCoord) {
+            vec4 sampleFivePoints(vec2 TexCoord, float resolution) {
                 vec4 AccColor = vec4(0.0);
                 AccColor += 0.40*sampleCubeColor(toSphere(TexCoord));
                 // Pixel width for 2048 is 0.000488.
-                float SubStep = 0.0004;
+                float SubStep = 0.7071 / (2.0 * resolution);
                 AccColor += 0.15*sampleCubeColor(toSphere(TexCoord+vec2(SubStep,SubStep)));
                 AccColor += 0.15*sampleCubeColor(toSphere(TexCoord+vec2(SubStep,-SubStep)));
                 AccColor += 0.15*sampleCubeColor(toSphere(TexCoord+vec2(-SubStep,SubStep)));
@@ -196,11 +272,10 @@ warp_frag_shader_src = """
             vec4 sampleDepth(vec2 TexCoord) {
                 return sampleCubeDepth(toSphere(TexCoord));
             }
-            vec4 sampleNinePointsIrregular(vec2 TexCoord) {
+            vec4 sampleNinePointsIrregular(vec2 TexCoord, float resolution) {
                 vec4 AccColor = vec4(0.0);
                 AccColor += 0.36*sampleCubeColor(toSphere(TexCoord));
-                // Pixel width for 2048 is 0.000488.
-                float SubStep = 0.00006;
+                float SubStep = 0.25 / resolution;
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(3.0*SubStep,SubStep)));
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(2.0*SubStep,2.5*SubStep)));
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(-SubStep,3.0*SubStep)));
@@ -211,11 +286,11 @@ warp_frag_shader_src = """
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(2.5*SubStep,-2.0*SubStep)));
                 return AccColor;
             }
-            vec4 sampleNinePointsRegular(vec2 TexCoord) {
+            vec4 sampleNinePointsRegular(vec2 TexCoord, float resolution) {
                 vec4 AccColor = vec4(0.0);
                 AccColor += 0.36*sampleCubeColor(toSphere(TexCoord));
                 // Pixel width for 2048 is 0.000488. Offsets a little under half pixel width.
-                float SubStep = 0.0005;
+                float SubStep = 0.45 / resolution;
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(SubStep,0.0)));
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(0.707*SubStep,0.707*SubStep)));
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(0.0,SubStep)));
@@ -226,9 +301,50 @@ warp_frag_shader_src = """
                 AccColor += 0.08*sampleCubeColor(toSphere(TexCoord+vec2(0.707*SubStep,-0.707*SubStep)));
                 return AccColor;
             }
+            vec4 sampleTwentyOnePoints(vec2 TexCoord, float resolution) {
+                float InnerSubStep = 0.15 / resolution;
+                float MidSubStep = 0.30 / resolution;
+                float OuterSubStep = 0.45 / resolution;
+                
+                vec4 InnerAccColor = vec4(0.0);
+                InnerAccColor += sampleCubeColor(toSphere(TexCoord+vec2( InnerSubStep, InnerSubStep)));
+                InnerAccColor += sampleCubeColor(toSphere(TexCoord+vec2( InnerSubStep,-InnerSubStep)));
+                InnerAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-InnerSubStep, InnerSubStep)));
+                InnerAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-InnerSubStep,-InnerSubStep)));
+                
+                vec4 MidAccColor = vec4(0.0);
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2( 0.92388*MidSubStep, 0.38268*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2( 0.92388*MidSubStep,-0.38268*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2( 0.38268*MidSubStep, 0.92388*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-0.38268*MidSubStep, 0.92388*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-0.92388*MidSubStep, 0.38268*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-0.92388*MidSubStep,-0.38268*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2( 0.38268*MidSubStep,-0.92388*MidSubStep)));
+                MidAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-0.38268*MidSubStep,-0.92388*MidSubStep)));
+                
+                vec4 OuterAccColor = vec4(0.0);
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2(         OuterSubStep,                  0.0)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2( 0.70711*OuterSubStep, 0.70711*OuterSubStep)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2(                  0.0,         OuterSubStep)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-0.70711*OuterSubStep, 0.70711*OuterSubStep)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2(        -OuterSubStep,                  0.0)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2(-0.70711*OuterSubStep,-0.70711*OuterSubStep)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2(                  0.0,        -OuterSubStep)));
+                OuterAccColor += sampleCubeColor(toSphere(TexCoord+vec2( 0.70711*OuterSubStep,-0.70711*OuterSubStep)));
+                
+                vec4 AccColor = vec4(0.0);
+                AccColor += 0.37 * sampleCubeColor(toSphere(TexCoord));
+                AccColor += 0.250 * 0.28 * InnerAccColor;
+                AccColor += 0.125 * 0.21 * MidAccColor;
+                AccColor += 0.125 * 0.14 * OuterAccColor;
+                return AccColor;
+            }
             void main() {
-                vec4 color = sampleCubeColor(toSphere(oTexCoord));
-                //vec4 color = sampleFivePoints(oTexCoord);
+                float resolution = Resolution;
+                //vec4 color = sampleCubeColor(toSphere(oTexCoord));
+                //vec4 color = sampleFivePoints(oTexCoord, resolution);
+                //vec4 color = sampleNinePointsRegular(oTexCoord, resolution);
+                vec4 color = sampleTwentyOnePoints(oTexCoord, resolution);
                 //vec4 depth = pow(sampleDepth(oTexCoord), vec4(8.0)); 
                 //FragColor = vec4(color.rgb, depth.r);
                 FragColor = vec4(color.rgb, 1.0);
@@ -292,6 +408,7 @@ class TextureBuffer:
                 glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, clamp)
 
         glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, self.texSize[0], self.texSize[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+        # glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, self.texSize[0], self.texSize[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
 
         if mip_levels > 1:
             glGenerateMipmap(GL_TEXTURE_2D)
@@ -333,6 +450,7 @@ class TextureBuffer:
         if bind:
             glBindTexture(GL_TEXTURE_2D, self.texId)
         glTexImage2D(GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, self.texSize[0], self.texSize[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
+        # glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, self.texSize[0], self.texSize[1], 0, GL_RGBA, GL_UNSIGNED_BYTE, data)
 
 
 class ShaderFill:
@@ -342,7 +460,8 @@ class ShaderFill:
         self.uniform_locations = {}
         self.float_uniforms = {}
         self.vec3_uniforms = {}
-        self.matrix_uniforms = {}
+        self.matrix4_uniforms = {}
+        self.matrix3_uniforms = {}
         self.destroy_textures = True
         vs = shaders.compileShader(vert, GL_VERTEX_SHADER)
         fs = shaders.compileShader(frag, GL_FRAGMENT_SHADER)
@@ -371,7 +490,13 @@ class ShaderFill:
         self.vec3_uniforms[name] = values
 
     def add_matrix_uniform(self, name, matrix):
-        self.matrix_uniforms[name] = matrix
+        self.matrix4_uniforms[name] = matrix
+
+    def add_matrix4_uniform(self, name, matrix):
+        self.matrix4_uniforms[name] = matrix
+
+    def add_matrix3_uniform(self, name, matrix):
+        self.matrix3_uniforms[name] = matrix
 
     def get_uniform_location(self, name):
         if name in self.uniform_locations:

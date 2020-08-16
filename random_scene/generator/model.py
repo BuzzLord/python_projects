@@ -16,7 +16,8 @@ class Model:
         self.indices = np.array([], dtype=np.int32)
         self.float_uniforms = {}
         self.vec3_uniforms = {}
-        self.matrix_uniforms = {}
+        self.matrix4_uniforms = {}
+        self.matrix3_uniforms = {}
         self.bounding_box = None
         self.bounding_box_valid = False
 
@@ -28,7 +29,8 @@ class Model:
         model_copy.indices = np.copy(self.indices)
         model_copy.float_uniforms = self.float_uniforms.copy()
         model_copy.vec3_uniforms = self.vec3_uniforms.copy()
-        model_copy.matrix_uniforms = self.matrix_uniforms.copy()
+        model_copy.matrix4_uniforms = self.matrix4_uniforms.copy()
+        model_copy.matrix3_uniforms = self.matrix3_uniforms.copy()
         return model_copy
 
     def get_matrix(self):
@@ -295,7 +297,13 @@ class Model:
         self.vec3_uniforms[name] = values
 
     def add_matrix_uniform(self, name, matrix):
-        self.matrix_uniforms[name] = matrix
+        self.matrix4_uniforms[name] = matrix
+
+    def add_matrix4_uniform(self, name, matrix):
+        self.matrix4_uniforms[name] = matrix
+
+    def add_matrix3_uniform(self, name, matrix):
+        self.matrix3_uniforms[name] = matrix
 
     def render(self, view, proj):
         # print("view type: " + str(view.dtype) + ", shape: " + str(view.shape))
@@ -314,11 +322,17 @@ class Model:
             glUniformMatrix4fv(self.shader.get_uniform_location("Proj"), 1, GL_TRUE, proj)
             glUniformMatrix3fv(self.shader.get_uniform_location("NormalMatrix"), 1, GL_TRUE, norm_matrix)
 
-            for name in self.shader.matrix_uniforms.keys():
-                if name in self.matrix_uniforms.keys():
-                    glUniformMatrix4fv(self.shader.get_uniform_location(name), 1, GL_TRUE, self.matrix_uniforms[name])
+            for name in self.shader.matrix4_uniforms.keys():
+                if name in self.matrix4_uniforms.keys():
+                    glUniformMatrix4fv(self.shader.get_uniform_location(name), 1, GL_TRUE, self.matrix4_uniforms[name])
                 else:
-                    glUniformMatrix4fv(self.shader.get_uniform_location(name), 1, GL_TRUE, self.shader.matrix_uniforms[name])
+                    glUniformMatrix4fv(self.shader.get_uniform_location(name), 1, GL_TRUE, self.shader.matrix4_uniforms[name])
+
+            for name in self.shader.matrix3_uniforms.keys():
+                if name in self.matrix3_uniforms.keys():
+                    glUniformMatrix3fv(self.shader.get_uniform_location(name), 1, GL_TRUE, self.matrix3_uniforms[name])
+                else:
+                    glUniformMatrix3fv(self.shader.get_uniform_location(name), 1, GL_TRUE, self.shader.matrix3_uniforms[name])
 
             for i, texname in enumerate(self.shader.texture.keys()):
                 glUniform1i(self.shader.get_uniform_location(texname), i)

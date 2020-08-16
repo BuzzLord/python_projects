@@ -18,7 +18,8 @@ class ApplicationSiren:
 
     def __init__(self, seed=1234):
         self.window_name = b'Application Siren'
-        self.window_size = (256, 256)
+        self.window_size = (2048, 2048)
+        self.effective_resolution = 2048
         self.camera_yaw = 180.0
         self.camera_pitch = 0.0
         self.camera_position = np.array([0.0, 1.5, 0.0, 1.], dtype='float32')
@@ -38,7 +39,7 @@ class ApplicationSiren:
         self.activate_next_scene = False
         self.cubemap = [None,None,None,None,None]
         self.cube_proj = perspective(90.0, 1.0, 0.1, 200.0)
-        self.cubemap_size = (4096, 4096)
+        self.cubemap_size = (self.effective_resolution*2, self.effective_resolution*2)
 
         self.position_delta = 2.0 / self.window_size[0]
         self.angle_delta = math.degrees(math.atan(2.0 / self.window_size[0]))
@@ -133,6 +134,7 @@ class ApplicationSiren:
         self.warp_dep = DepthBuffer(self.warp_tex.get_size())
 
         self.warp_shader = ShaderFill(basic_vertex_shader_src, warp_frag_shader_src)
+        self.warp_shader.add_float_uniform("Resolution", float(self.effective_resolution))
         for cubemap in self.cubemap:
             self.warp_shader.add_texture_buffer(cubemap.tex)
             self.warp_shader.add_texture_buffer(cubemap.depth)
@@ -206,12 +208,13 @@ class ApplicationSiren:
         if self.generation_mode:
             print("Saving scene " + str(self.generation_count))
             save_cubemap = False
-            # positions, rotations = self.__generate_random_positions(1, 1)  # 8 2048
-            # positions, rotations = self.__generate_random_positions(1, 4)  # 32 1024
-            # positions, rotations = self.__generate_random_positions(2, 2)  # 128 512
-            # positions, rotations = self.__generate_random_positions(4, 1)  # 512 256
-            # positions, rotations = self.__generate_random_positions(4, 1)   # 512 512
-            positions, rotations = self.__generate_random_positions(4, 4)   # 2048 256
+            positions, rotations = self.__generate_random_positions(1, 1)  # 8
+            # positions, rotations = self.__generate_random_positions(1, 4)  # 32
+            # positions, rotations = self.__generate_random_positions(2, 2)  # 128
+            # positions, rotations = self.__generate_random_positions(4, 1)   # 512
+            # positions, rotations = self.__generate_random_positions(4, 4)   # 2048
+            # positions, rotations = self.__generate_random_positions(8, 1)   # 4096
+            # positions, rotations = self.__generate_random_positions(8, 4)   # 16k
             offset = positions[0][0]
             print("Eye offset=" + str(offset))
             for i, (pos,rot) in enumerate(zip(positions, rotations)):
@@ -269,7 +272,7 @@ class ApplicationSiren:
         image = image.transpose(Image.FLIP_TOP_BOTTOM)
 
         version = "4"
-        save_path = "screens4_256X"
+        save_path = "screens4_mixed\\2048"
         if not os.path.exists(save_path):
             os.mkdir(save_path)
 
@@ -300,7 +303,7 @@ class ApplicationSiren:
                 file_path = os.path.join(save_path, cubemap_filename)
                 image.save(file_path, 'png')
 
-    def __generate_random_positions(self, num, count=1, test_mode=False):
+    def __generate_random_positions(self, num, count=1, test_mode=False, full_360=False, naive_angle=True):
         """
         Splits each dimension into num*2 sections, then creates count position vectors in each.
         Also appends L,R images.
@@ -308,10 +311,8 @@ class ApplicationSiren:
         :param count: num images in each region
         :return: num*num*num*8 * count + 2 pos vectors
         """
-        if test_mode:
-            eye_offset = 0.025
-        else:
-            eye_offset = np.random.uniform(0.015, 0.04)
+        eye_offset = 0.025
+        # eye_offset = np.random.uniform(0.015, 0.04)
         positions = np.array([[eye_offset,0.0,0.0,0.0],[-eye_offset,0.0,0.0,0.0]], dtype=np.float32)
         rotations = np.array([[0.0,0.0],[0.0,0.0]], dtype=np.float32)
         x_bound = 4.0 * eye_offset
@@ -319,23 +320,45 @@ class ApplicationSiren:
         z_bound = 3.0 * eye_offset
         bounds_power = 1.0
 
-        res_angles = {
-            2:    (1 / 2,    3.918265e-1),
-            4:    (1 / 4,    1.000796e-1),
-            8:    (1 / 8,    2.469218e-2),
-            16:   (1 / 16,   6.145642e-3),
-            32:   (1 / 32,   1.534594e-3),
-            64:   (1 / 64,   3.835311e-4),
-            128:  (1 / 128,  9.587665e-5),
-            256:  (1 / 256,  2.396875e-5),
-            512:  (1 / 512,  5.992043e-6),
-            1024: (1 / 1024, 1.497961e-6),
-            2048: (1 / 2048, 3.744597e-7),
-            4096: (1 / 4096, 9.361220e-8)
-        }
+        if full_360:
+            u_scale = 0.5
+            v_scale = 0.25
 
-        u_bound = 90.0 * res_angles[self.window_size[0]][0]
-        v_bound = 90.0 * res_angles[self.window_size[1]][1]
+            def get_rotation():
+                u = np.random.normal(0.0, u_scale)
+                v = np.random.normal(0.0, v_scale)
+                return np.array([[u * 90.0, v * 90.0]], dtype=np.float32)
+        elif naive_angle:
+            u_bound = 90.0 / self.window_size[0]
+            v_bound = 90.0 / self.window_size[1]
+
+            def get_rotation():
+                u = np.random.uniform(-1.0, 1.0)
+                v = np.random.uniform(-1.0, 1.0)
+                return np.array([[u * u_bound, v * v_bound]], dtype=np.float32)
+        else:
+            res_angles = {
+                2:    (1 / 2,    3.918265e-1),
+                4:    (1 / 4,    1.000796e-1),
+                8:    (1 / 8,    2.469218e-2),
+                16:   (1 / 16,   6.145642e-3),
+                32:   (1 / 32,   1.534594e-3),
+                64:   (1 / 64,   3.835311e-4),
+                128:  (1 / 128,  9.587665e-5),
+                256:  (1 / 256,  2.396875e-5),
+                512:  (1 / 512,  5.992043e-6),
+                1024: (1 / 1024, 1.497961e-6),
+                2048: (1 / 2048, 3.744597e-7),
+                4096: (1 / 4096, 9.361220e-8)
+            }
+
+            u_bound = 90.0 * res_angles[self.window_size[0]][0]
+            v_bound = 90.0 * res_angles[self.window_size[1]][1]
+
+            def get_rotation():
+                u = np.random.uniform(-1.0, 1.0)
+                v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
+                return np.array([[u * u_bound, v * v_bound]], dtype=np.float32)
 
         if test_mode:
             s = 2.0 * eye_offset
@@ -362,10 +385,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[x, y, z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -374,10 +395,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[-x, y, z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -386,10 +405,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[x, -y, z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -398,10 +415,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[-x, -y, z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -410,10 +425,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[x, y, -z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -422,10 +435,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[-x, y, -z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -434,10 +445,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[x, -y, -z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
                         x = np.random.uniform(np.power(x_range[i], bounds_power),
                                               np.power(x_range[i + 1], bounds_power)) * x_bound
@@ -446,10 +455,8 @@ class ApplicationSiren:
                         z = np.random.uniform(np.power(z_range[k], bounds_power),
                                               np.power(z_range[k + 1], bounds_power)) * z_bound
                         p = np.array([[-x, -y, -z, 0.0]], dtype=np.float32)
-                        u = np.random.uniform(-1.0, 1.0)
-                        v = np.random.uniform(-1.0, 1.0) * (1 - abs(u))
                         positions = np.append(positions, p, axis=0)
-                        rotations = np.append(rotations, np.array([[u*u_bound, v*v_bound]], dtype=np.float32), axis=0)
+                        rotations = np.append(rotations, get_rotation(), axis=0)
 
         return positions, rotations
 
