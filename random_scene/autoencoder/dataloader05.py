@@ -1,5 +1,5 @@
 from os import listdir
-from os.path import isfile, join, exists, basename
+from os.path import isfile, join, exists, basename, getsize
 from re import match
 import torch
 import numpy as np
@@ -48,8 +48,9 @@ def vector_to_angle(look):
 class RandomSceneSirenFileListLoader(Dataset):
     """Random scene dataset."""
 
-    def __init__(self, root_dir, dataset_seed, batch_size, num_workers, pin_memory, test_percent=0.1, is_test=False,
-                 shuffle=True, pos_scale=None, importance=None, transform=None, device=None):
+    def __init__(self, root_dir, dataset_seed, batch_size, num_workers, pin_memory, img_set_size=1048576,
+                 test_percent=0.1, is_test=False, shuffle=True, pos_scale=None, importance=None, transform=None,
+                 device=None):
         """
         Args:
             root_dir (string or list): Directory with all the images.
@@ -79,10 +80,21 @@ class RandomSceneSirenFileListLoader(Dataset):
         self.test_percent = min(max(test_percent, 0.0), 1.0)
         self.is_test = is_test
         self.file_names = []
+        self.read_files_from_root_dirs(dataset_seed, root_dir)
 
+        logging.info("Resulting file list contains {} files.".format(len(self.file_names)))
+
+        self.img_sets = []
+        self.img_set_size = img_set_size
+        self.construct_img_sets()
+
+        self.transform = transform
+
+    def read_files_from_root_dirs(self, dataset_seed, root_dir):
         logging.info("Checking dataset directory listing for {}".format(root_dir))
         for d in self.root_dirs:
-            file_list = [join(d, f) for f in listdir(d) if isfile(join(d, f)) and f.startswith("ss") and f.endswith(".png")]
+            file_list = [join(d, f) for f in listdir(d) if
+                         isfile(join(d, f)) and f.startswith("ss") and f.endswith(".png")]
             match_files = []
             for f in file_list:
                 fg = match("ss([34])_([0-9]*)_.*.png", basename(f))
@@ -105,12 +117,35 @@ class RandomSceneSirenFileListLoader(Dataset):
             else:
                 self.file_names.extend(match_files[file_count:])
 
-        logging.info("Resulting file list contains " + str(len(self.file_names)) + " files.")
-
-        self.transform = transform
+    def construct_img_sets(self):
+        random.shuffle(self.file_names)
+        next_batch = []
+        next_batch_size = 0
+        for f in self.file_names:
+            try:
+                f_size = getsize(f)
+            except OSError:
+                logging.error("Got an OS Error when checking {}".format(f))
+                continue
+            if (next_batch_size + f_size) > self.img_set_size:
+                if len(next_batch) == 0:
+                    logging.warning("Single file '{}' is over img_set_size ({})".format(f, self.img_set_size))
+                    next_batch.append(f)
+                    self.img_sets.append(next_batch)
+                    next_batch = []
+                    next_batch_size = 0
+                else:
+                    self.img_sets.append(next_batch)
+                    next_batch = [f]
+                    next_batch_size = f_size
+            else:
+                next_batch.append(f)
+                next_batch_size += f_size
+        if len(next_batch) > 0:
+            self.img_sets.append(next_batch)
 
     def collate_fn(self, batch):
-        return batch
+        return [sample for sublist in batch for sample in sublist]
 
     def generate_dataloader(self, sample_list, apply_transform=False, max_t=1.0):
         dataloader = RandomSceneSirenSampleLoader(sample_list=sample_list, batch_size=self.batch_size,
@@ -119,45 +154,49 @@ class RandomSceneSirenFileListLoader(Dataset):
         return dataloader
 
     def __len__(self):
-        return len(self.file_names)
+        return len(self.img_sets)
 
     def __getitem__(self, idx):
-        vg = match("ss([1234])_([0-9]*)_.*.png", basename(self.file_names[idx]))
-        if vg.group(1) == "3":
-            fg = match("ss([1234])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png",
-                       basename(self.file_names[idx]))
-            pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
-            rot_group = (0.0, 0.0)
-        elif vg.group(1) == "4":
-            fg = match("ss([1234])_([0-9]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9e.+-]*)_([0-9e.+-]*)_([lrg]).png",
-                       basename(self.file_names[idx]))
-            pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
-            rot_group = (float(fg.group(6)), float(fg.group(7)))
-        else:
-            raise RuntimeError("Invalid version {}".format(vg.group(1)))
+        img_set = self.img_sets[idx]
+        samples = []
+        for file_name in img_set:
+            vg = match("ss([1234])_([0-9]*)_.*.png", basename(file_name))
+            if vg.group(1) == "3":
+                fg = match("ss([1234])_([0-9]*)_([0-9.-]*)_([0-9.-]*)_([0-9.-]*)_([lrg]).png",
+                           basename(file_name))
+                pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
+                rot_group = (0.0, 0.0)
+            elif vg.group(1) == "4":
+                fg = match("ss([1234])_([0-9]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9e.+-]*)_([0-9e.+-]*)_([lrg]).png",
+                           basename(file_name))
+                pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
+                rot_group = (float(fg.group(6)), float(fg.group(7)))
+            else:
+                raise RuntimeError("Invalid version {}".format(vg.group(1)))
 
-        image = np.clip((1.0 / 255.0) * np.array(cv2.imread(self.file_names[idx], cv2.IMREAD_UNCHANGED),
-                                                 dtype=np.float32), 0.0, 1.0)
-        edges = self.get_image_edges(image)
+            image = np.clip((1.0 / 255.0) * np.array(cv2.imread(file_name, cv2.IMREAD_UNCHANGED),
+                                                     dtype=np.float32), 0.0, 1.0)
+            edges = self.get_image_edges(image)
 
-        image = 2.0 * image - 1.0
-        image = image[:, :, 0:3][:, :, ::-1]
-        image_cuda = torch.from_numpy(image.copy()).to(self.device, dtype=torch.float32)
+            image = 2.0 * image - 1.0
+            image = image[:, :, 0:3][:, :, ::-1]
+            image_cuda = torch.from_numpy(image.copy()).to(self.device, dtype=torch.float32)
 
-        position = self.construct_positions(image.shape[0], image.shape[1], pos_group)
-        theta, phi, angles_valid = self.construct_angles(image.shape[0], image.shape[1], rot_group)
+            position = self.construct_positions(image.shape[0], image.shape[1], pos_group)
+            theta, phi, angles_valid = self.construct_angles(image.shape[0], image.shape[1], rot_group)
 
-        sample_count = torch.pow(2.0, edges).round().type(torch.long) * angles_valid
-        sample_count = sample_count.view((image.shape[0] * image.shape[1]))
+            sample_count = torch.pow(2.0, edges).round().type(torch.long) * angles_valid
+            sample_count = sample_count.view((image.shape[0] * image.shape[1]))
 
-        inputs = torch.cat((position, theta, phi), dim=2)
+            inputs = torch.cat((position, theta, phi), dim=2)
 
-        return { "filename": self.file_names[idx],
-                 "image": image_cuda,
-                 "inputs": inputs,
-                 "sample_count": sample_count,
-                 "dims": (image.shape[0], image.shape[1])
-                 }
+            samples.append({"filename": file_name,
+                            "image": image_cuda,
+                            "inputs": inputs,
+                            "sample_count": sample_count,
+                            "dims": (image.shape[0], image.shape[1])
+                            })
+        return samples
 
     def construct_angles(self, dim0, dim1, rot_group):
         theta_base = torch.linspace(-1.0 + (1 / float(dim0)), 1.0 - (1 / float(dim0)), dim0,

@@ -101,6 +101,10 @@ class Siren(nn.Module):
         out = self.network(x)
         return out
 
+    def zero_grad(self):
+        for p in self.parameters():
+            p.grad = None
+
     def print_statistics(self):
         for k, m in self.named_modules():
             if isinstance(m, nn.Linear):
@@ -121,7 +125,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             data_input = sample["inputs"]
             data_actual = sample["outputs"]
 
-            optimizer.zero_grad()
+            model.zero_grad()
             data_output = model(data_input)
             loss = criterion(data_output, data_actual)
             loss.backward()
