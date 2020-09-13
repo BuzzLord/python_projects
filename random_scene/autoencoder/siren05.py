@@ -113,6 +113,7 @@ class Siren(nn.Module):
 
 def train(args, model, device, train_loader, criterion, optimizer, epoch):
     model.train()
+    scalar = torch.cuda.amp.GradScaler()
     train_set = train_loader.dataset
     render_vector_count = 512*512
     for image_idx, sample_list in enumerate(train_loader):
@@ -126,10 +127,12 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             data_actual = sample["outputs"]
 
             model.zero_grad()
-            data_output = model(data_input)
-            loss = criterion(data_output, data_actual)
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast():
+                data_output = model(data_input)
+                loss = criterion(data_output, data_actual)
+            scalar.scale(loss).backward()
+            scalar.step(optimizer)
+            scalar.update()
             loss_data.append(loss.item())
 
         if args.log_interval > 0 and image_idx % args.log_interval == 0:
