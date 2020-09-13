@@ -132,9 +132,10 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
             optimizer.step()
             loss_data.append(loss.item())
 
-        if args.log_interval > 0:
-            if image_idx % 10 == 0:
+        if args.log_interval > 0 and image_idx % args.log_interval == 0:
+            if args.train_image_interval > 0 and (image_idx / args.log_interval) % args.train_image_interval == 0:
                 with torch.no_grad():
+                    torch.cuda.empty_cache()
                     sample = data_loader.get_in_order_sample()
                     data_input = sample["inputs"]
                     data_output = torch.zeros((0, 3), dtype=torch.float32)
@@ -150,6 +151,7 @@ def train(args, model, device, train_loader, criterion, optimizer, epoch):
                                join(args.model_path,
                                     "train{:02d}-{:02d}.png".format(epoch, int(image_idx/10))),
                                nrow=1)
+                    torch.cuda.empty_cache()
 
             m, s, b = get_loss_stats(loss_data)
             logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e}, {:.3e})'.format(
@@ -174,6 +176,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                 test_loss.append(criterion(data_output, data_actual).item())
 
             if image_idx % img_save_modulus == 0:
+                torch.cuda.empty_cache()
                 sample = data_loader.get_in_order_sample()
                 data_input = sample["inputs"]
                 data_output = torch.zeros((0, 3), dtype=torch.float32)
@@ -189,6 +192,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                            join(args.model_path,
                                 "test{:02d}-{:02d}.png".format(epoch, int(image_idx/img_save_modulus))),
                            nrow=1)
+                torch.cuda.empty_cache()
 
             if len(test_loss) > 1:
                 m, s, b = get_loss_stats(test_loss)
@@ -268,8 +272,11 @@ def arg_parser(input_args, model_number="05"):
                         help='filename to pre-trained model state to load')
     parser.add_argument('--model-path', type=str, metavar='PATH',
                         help='pathname for this models output (default siren' + model_number + ')')
-    parser.add_argument('--log-interval', type=int, default=128, metavar='N',
+    parser.add_argument('--log-interval', type=int, default=2, metavar='N',
                         help='how many batches to wait before logging training status')
+    parser.add_argument('--train-image-interval', type=int, default=0, metavar='N',
+                        help='generate output images for every N log intervals')
+
     parser.add_argument('--log-file', type=str, default="", metavar='FILENAME',
                         help='filename to log output to')
     parser.add_argument('--dataset', nargs='+', type=str, metavar='PATH',
