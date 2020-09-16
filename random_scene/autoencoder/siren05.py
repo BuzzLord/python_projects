@@ -195,7 +195,7 @@ def test(args, model, device, test_loader, criterion, epoch):
                            join(args.model_path,
                                 "test{:02d}-{:02d}.png".format(epoch, int(image_idx/img_save_modulus))),
                            nrow=1)
-                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
             if len(test_loss) > 1:
                 m, s, b = get_loss_stats(test_loss)
@@ -227,6 +227,11 @@ def get_loss_stats(loss):
         return c, s, b
 
 
+def get_lr(optimizer):
+    for param_group in optimizer.param_groups:
+        return param_group['lr']
+
+
 def arg_parser(input_args, model_number="05"):
     parser = argparse.ArgumentParser(description='PyTorch SIREN Model ' + model_number + ' Experiment')
     parser.add_argument('--batch-size', type=int, default=2048, metavar='N',
@@ -251,8 +256,8 @@ def arg_parser(input_args, model_number="05"):
                         help='Adam beta 2 (default: 0.999)')
     parser.add_argument('--weight-decay', type=float, default=0., metavar='D',
                         help='Weight decay (default: 0.)')
-    parser.add_argument('--schedule-step-size', type=int, default=4, metavar='S',
-                        help='Schedule step size for LR decay (default: 4)')
+    parser.add_argument('--schedule-step', nargs='*', type=int, metavar='S',
+                        help='Schedule steps for Multi-Step LR decay')
     parser.add_argument('--schedule-gamma', type=float, default=1.0, metavar='G',
                         help='Schedule gamma factor for LR decay (default: 1.0)')
     parser.add_argument('--dropout', type=float, metavar='DROPOUT',
@@ -273,6 +278,8 @@ def arg_parser(input_args, model_number="05"):
                         help='random seed (default: 1)')
     parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
                         help='filename to pre-trained model state to load')
+    parser.add_argument('--load-optim-state', type=str, default="", metavar='FILENAME',
+                        help='filename to optimizer state to continue with')
     parser.add_argument('--model-path', type=str, metavar='PATH',
                         help='pathname for this models output (default siren' + model_number + ')')
     parser.add_argument('--log-interval', type=int, default=2, metavar='N',
@@ -341,27 +348,43 @@ def main(custom_args=None):
                   pos_encoding_levels=(args.pos_encoding, args.rot_encoding), dropout=args.dropout)
     if len(args.load_model_state) > 0:
         model_path = os.path.join(args.model_path, args.load_model_state)
-        if os.path.exists(model_path):
-            logging.info("Loading model from {}".format(model_path))
-            model.load_state_dict(torch.load(model_path))
-            model.eval()
+        if not os.path.exists(model_path):
+            raise FileNotFoundError("Could not find model path {}".format(model_path))
+        logging.info("Loading model from {}".format(model_path))
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
     model = model.to(device, dtype=torch.float32)
 
-    logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), ".format(args.lr, args.beta1, args.beta2) +
-                 "and Weight Decay {}".format(args.weight_decay))
-    optimizer = optim.Adam(model.parameters(),
-                           lr=args.lr, betas=(args.beta1, args.beta2),
-                           weight_decay=args.weight_decay)
-    logging.info("Using StepLR Learning Rate Scheduler " +
-                 "with step size = {} and gamma = {}".format(args.schedule_step_size, args.schedule_gamma))
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.schedule_step_size, gamma=args.schedule_gamma)
+    if len(args.load_optim_state) > 0:
+        optim_path = os.path.join(args.model_path, args.load_optim_state)
+        if not os.path.exists(optim_path):
+            raise FileNotFoundError("Could not find optimizer path {}".format(optim_path))
+        logging.info("Loading optimizer state from {}".format(optim_path))
+        optimizer = optim.Adam(model.parameters())
+        optimizer.load_state_dict(torch.load(optim_path))
+    else:
+        logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), ".format(args.lr, args.beta1, args.beta2) +
+                     "and Weight Decay {}".format(args.weight_decay))
+        optimizer = optim.Adam(model.parameters(),
+                               lr=args.lr, betas=(args.beta1, args.beta2),
+                               weight_decay=args.weight_decay)
+
+    if args.schedule_step is not None and len(args.schedule_step) > 0:
+        logging.info("Using StepLR Learning Rate Scheduler " +
+                     "with steps = {} and gamma = {}".format(args.schedule_step, args.schedule_gamma))
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.schedule_step,
+                                                   gamma=args.schedule_gamma, last_epoch=args.epoch_start-2)
+    else:
+        scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[args.epochs], gamma=1.0)
+
     criterion = ModelLoss(device=device)
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
-        logging.info("Starting epoch {} with LR {:.3e}".format(epoch, scheduler.get_last_lr()[0]))
+        logging.info("Starting epoch {} with LR {:.3e}".format(epoch, get_lr(optimizer)))
         train(args, model, device, train_loader, criterion, optimizer, epoch)
         test(args, model, device, test_loader, criterion, epoch)
         torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
+        torch.save(optimizer.state_dict(), join(args.model_path, "optim_state_{}.pth".format(epoch)))
         scheduler.step()
 
 
