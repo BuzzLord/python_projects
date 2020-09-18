@@ -111,9 +111,8 @@ class Siren(nn.Module):
                 logging.info("{}: weights {:.6f} ({:.6f})".format(k, m.weight.data.mean(), m.weight.data.std()))
 
 
-def train(args, model, device, train_loader, criterion, optimizer, epoch):
+def train(args, model, device, train_loader, criterion, optimizer, scalar, epoch):
     model.train()
-    scalar = torch.cuda.amp.GradScaler()
     train_set = train_loader.dataset
     render_vector_count = 512*512
     for image_idx, sample_list in enumerate(train_loader):
@@ -280,6 +279,8 @@ def arg_parser(input_args, model_number="05"):
                         help='filename to pre-trained model state to load')
     parser.add_argument('--load-optim-state', type=str, default="", metavar='FILENAME',
                         help='filename to optimizer state to continue with')
+    parser.add_argument('--load-scalar-state', type=str, default="", metavar='FILENAME',
+                        help='filename to AMP scalar state to continue with')
     parser.add_argument('--model-path', type=str, metavar='PATH',
                         help='pathname for this models output (default siren' + model_number + ')')
     parser.add_argument('--log-interval', type=int, default=2, metavar='N',
@@ -377,14 +378,23 @@ def main(custom_args=None):
     else:
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[args.epochs], gamma=1.0)
 
+    scalar = torch.cuda.amp.GradScaler()
+    if len(args.load_scalar_state) > 0:
+        scalar_path = os.path.join(args.model_path, args.load_scalar_state)
+        if not os.path.exists(scalar_path):
+            raise FileNotFoundError("Could not find scalar path {}".format(scalar_path))
+        logging.info("Loading scalar state from {}".format(scalar_path))
+        scalar.load_state_dict(torch.load(scalar_path))
+
     criterion = ModelLoss(device=device)
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
         logging.info("Starting epoch {} with LR {:.3e}".format(epoch, get_lr(optimizer)))
-        train(args, model, device, train_loader, criterion, optimizer, epoch)
+        train(args, model, device, train_loader, criterion, optimizer, scalar, epoch)
         test(args, model, device, test_loader, criterion, epoch)
         torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
         torch.save(optimizer.state_dict(), join(args.model_path, "optim_state_{}.pth".format(epoch)))
+        torch.save(scalar.state_dict(), join(args.model_path, "scalar_state_{}.pth".format(epoch)))
         scheduler.step()
 
 
