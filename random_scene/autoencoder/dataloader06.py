@@ -144,8 +144,7 @@ class RandomSceneSirenFileListLoader(Dataset):
 
     def generate_dataloader(self, sample_list, apply_transform=False, max_t=1.0):
         dataloader = RandomSceneSirenSampleLoader(sample_list=sample_list, batch_size=self.batch_size,
-                                                  device=self.device, shuffle=self.shuffle,
-                                                  apply_transform=apply_transform, max_t=max_t)
+                                                  shuffle=self.shuffle, apply_transform=apply_transform, max_t=max_t)
         return dataloader
 
     def __len__(self):

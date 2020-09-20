@@ -1,8 +1,10 @@
 from __future__ import print_function
 import os
+import sys
 from collections import OrderedDict
 from os.path import join
 import argparse
+import multiprocessing
 import logging
 import math
 from statistics import mean, stdev
@@ -106,19 +108,19 @@ class Siren(nn.Module):
         for p in self.parameters():
             p.grad = None
 
-    def print_statistics(self):
+    def print_statistics(self, logger):
         for k, m in self.named_modules():
             if isinstance(m, nn.Linear):
-                logging.info("{}: weights {:.6f} ({:.6f})".format(k, m.weight.data.mean(), m.weight.data.std()))
+                logger.info("{}: weights {:.6f} ({:.6f})".format(k, m.weight.data.mean(), m.weight.data.std()))
 
 
-def train(args, model, rank, train_loader, criterion, optimizer, scalar, epoch):
+def train(args, logger, model, rank, train_loader, criterion, optimizer, scalar, epoch):
     model.train()
     train_set = train_loader.dataset
     render_vector_count = 512*512
     for image_idx, sample_list in enumerate(train_loader):
         if args.print_statistics:
-            model.print_statistics()
+            model.print_statistics(logger)
         data_loader = train_set.generate_dataloader(sample_list, apply_transform=args.random_position,
                                                     max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
         loss_data = []
@@ -157,11 +159,11 @@ def train(args, model, rank, train_loader, criterion, optimizer, scalar, epoch):
                     torch.cuda.empty_cache()
 
             m, s, b = get_loss_stats(loss_data)
-            logging.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e}, {:.3e})'.format(
+            logger.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.3e} ({:.3e}, {:.3e})'.format(
                 epoch, image_idx + 1, len(train_loader), 100. * (image_idx + 1) / len(train_loader), m, s, b))
 
 
-def test(args, model, rank, test_loader, criterion, epoch):
+def test(args, logger, model, rank, test_loader, criterion, epoch):
     model.eval()
     render_vector_count = 512 * 512
     img_save_modulus = max(1, int(len(test_loader)/6))
@@ -202,7 +204,7 @@ def test(args, model, rank, test_loader, criterion, epoch):
                 loss_value = "{:.3e} ({:.3e}, {:.3e})".format(m, s, b)
             else:
                 loss_value = "{:.3e}".format(test_loss[0])
-            logging.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
+            logger.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
 
 
 def convert_image(data, dims):
@@ -340,15 +342,18 @@ def arg_parser(input_args, model_number="06"):
     return args
 
 
-def run(rank, args):
+def run(rank, args, logger):
     if not dist.is_available():
         raise RuntimeError("Torch distributed is not available!")
+
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
 
     dist.init_process_group(backend="nccl", rank=rank, world_size=args.ddp_world_size)
 
     test_loader, train_loader, train_sampler = get_data_loaders(args)
 
-    logging.info("Siren configured with pos_encoding = ({},{}), hidden_size = {}, hidden_layers = {}".format(
+    logger.info("Siren configured with pos_encoding = ({},{}), hidden_size = {}, hidden_layers = {}".format(
         args.pos_encoding, args.rot_encoding, args.hidden_size, args.hidden_layers))
     model = Siren(hidden_size=args.hidden_size, hidden_layers=args.hidden_layers,
                   pos_encoding_levels=(args.pos_encoding, args.rot_encoding), dropout=args.dropout)\
@@ -358,7 +363,7 @@ def run(rank, args):
             model_path = os.path.join(args.model_path, args.load_model_state)
             if not os.path.exists(model_path):
                 raise FileNotFoundError("Could not find model path {}".format(model_path))
-            logging.info("Loading model from {}".format(model_path))
+            logger.info("Loading model from {}".format(model_path))
             model.load_state_dict(torch.load(model_path))
             model.eval()
     model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
@@ -367,19 +372,19 @@ def run(rank, args):
         optim_path = os.path.join(args.model_path, args.load_optim_state)
         if not os.path.exists(optim_path):
             raise FileNotFoundError("Could not find optimizer path {}".format(optim_path))
-        logging.info("Loading optimizer state from {}".format(optim_path))
+        logger.info("Loading optimizer state from {}".format(optim_path))
         optimizer = optim.Adam(model.parameters())
         optimizer.load_state_dict(torch.load(optim_path))
     else:
-        logging.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), ".format(args.lr, args.beta1, args.beta2) +
-                     "and Weight Decay {}".format(args.weight_decay))
+        logger.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), ".format(args.lr, args.beta1, args.beta2) +
+                    "and Weight Decay {}".format(args.weight_decay))
         optimizer = optim.Adam(model.parameters(),
                                lr=args.lr, betas=(args.beta1, args.beta2),
                                weight_decay=args.weight_decay)
 
     if args.schedule_step is not None and len(args.schedule_step) > 0:
-        logging.info("Using StepLR Learning Rate Scheduler " +
-                     "with steps = {} and gamma = {}".format(args.schedule_step, args.schedule_gamma))
+        logger.info("Using StepLR Learning Rate Scheduler " +
+                    "with steps = {} and gamma = {}".format(args.schedule_step, args.schedule_gamma))
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=args.schedule_step,
                                                    gamma=args.schedule_gamma, last_epoch=args.epoch_start-2)
     else:
@@ -390,16 +395,16 @@ def run(rank, args):
         scalar_path = os.path.join(args.model_path, args.load_scalar_state)
         if not os.path.exists(scalar_path):
             raise FileNotFoundError("Could not find scalar path {}".format(scalar_path))
-        logging.info("Loading scalar state from {}".format(scalar_path))
+        logger.info("Loading scalar state from {}".format(scalar_path))
         scalar.load_state_dict(torch.load(scalar_path))
 
     criterion = ModelLoss()
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
-        logging.info("Starting epoch {} with LR {:.3e}".format(epoch, get_lr(optimizer)))
+        logger.info("Starting epoch {} with LR {:.3e}".format(epoch, get_lr(optimizer)))
         train_sampler.set_epoch(epoch)
-        train(args, model, rank, train_loader, criterion, optimizer, scalar, epoch)
-        test(args, model, rank, test_loader, criterion, epoch)
+        train(args, logger, model, rank, train_loader, criterion, optimizer, scalar, epoch)
+        test(args, logger, model, rank, test_loader, criterion, epoch)
         if rank == 0:
             torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
             torch.save(optimizer.state_dict(), join(args.model_path, "optim_state_{}.pth".format(epoch)))
@@ -420,26 +425,29 @@ def main(custom_args=None):
     if not os.path.exists(args.model_path):
         os.mkdir(args.model_path)
 
-    if len(args.log_file) > 0:
-        log_formatter = logging.Formatter("%(asctime)s: %(message)s")
-        root_logger = logging.getLogger()
+    logger = multiprocessing.get_logger()
+    logger.setLevel(logging.INFO)
+    log_formatter = logging.Formatter("%(asctime)s: %(message)s")
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(log_formatter)
+    logger.addHandler(stream_handler)
 
+    if len(args.log_file) > 0:
         file_handler = logging.FileHandler(join(args.model_path, args.log_file))
         file_handler.setFormatter(log_formatter)
-        root_logger.addHandler(file_handler)
+        logger.addHandler(file_handler)
 
-    logging.info("\n*** Starting Siren Model {}".format(model_number))
-    logging.info("Arguments: {}".format(args))
+    logger.info("\n*** Starting Siren Model {}".format(model_number))
+    logger.info("Arguments: {}".format(args))
 
     if args.ddp_world_size < 1:
         raise AssertionError("DDP world size < 1")
 
-    logging.info("Using random seed " + str(args.seed))
+    logger.info("Using random seed " + str(args.seed))
     torch.manual_seed(args.seed)
 
     mp.spawn(run, args=(args,), nprocs=args.ddp_world_size, join=True)
 
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO, format='[%(threadName)s] %(message)s')
     main()
