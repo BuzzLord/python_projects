@@ -7,6 +7,7 @@ import argparse
 import multiprocessing
 import logging
 import math
+import time
 from statistics import mean, stdev
 
 import torch
@@ -251,6 +252,17 @@ def get_logger(args):
     return logger
 
 
+def set_seed(args, epoch, cuda_seed=True):
+    if args.seed is None:
+        torch.manual_seed(int((time.time() - 1.6e9) * 1.0e6))
+        if cuda_seed:
+            torch.cuda.seed_all()
+    else:
+        torch.manual_seed(args.seed+epoch)
+        if cuda_seed:
+            torch.cuda.manual_seed_all(args.seed+epoch)
+
+
 def get_data_loaders(args):
     position_scale = [1 / 4, 1 / 3, 1 / 3]
     dataset_path = [join('..', d) for d in args.dataset]
@@ -271,10 +283,14 @@ def get_data_loaders(args):
                                                  batch_size=test_batch_size, num_workers=args.num_workers,
                                                  pin_memory=(not args.dont_pin_memory), shuffle=False,
                                                  pos_scale=position_scale)
-    test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.img_batch_size, shuffle=False,
-                                              collate_fn=test_set.collate_fn)
+    if use_dist:
+        test_sampler = torch.utils.data.distributed.DistributedSampler(test_set)
+    else:
+        test_sampler = None
+    test_loader = torch.utils.data.DataLoader(test_set, batch_size=args.img_batch_size, sampler=test_sampler,
+                                              shuffle=False, collate_fn=test_set.collate_fn)
 
-    return test_loader, train_loader, train_sampler
+    return train_loader, test_loader, train_sampler, test_sampler
 
 
 def arg_parser(input_args, model_number="06"):
@@ -317,14 +333,12 @@ def arg_parser(input_args, model_number="06"):
     parser.add_argument('--importance', type=float, metavar='IMP',
                         help='Importance sampling scalar')
 
-    parser.add_argument('--seed', type=int, default=1, metavar='S',
-                        help='random seed (default: 1)')
+    parser.add_argument('--seed', type=int, metavar='S',
+                        help='random seed')
     parser.add_argument('--load-model-state', type=str, default="", metavar='FILENAME',
                         help='filename to pre-trained model state to load')
-    parser.add_argument('--load-optim-state', type=str, default="", metavar='FILENAME',
-                        help='filename to optimizer state to continue with')
-    parser.add_argument('--load-scalar-state', type=str, default="", metavar='FILENAME',
-                        help='filename to AMP scalar state to continue with')
+    parser.add_argument('--resume-model-filename', type=str, default="resume_state.pth", metavar='FILENAME',
+                        help='filename to resume model state')
     parser.add_argument('--model-path', type=str, metavar='PATH',
                         help='pathname for this models output (default siren' + model_number + ')')
     parser.add_argument('--log-interval', type=int, default=2, metavar='N',
@@ -376,38 +390,39 @@ def run(rank, args):
     if use_dist:
         dist.init_process_group(backend="nccl", rank=rank, world_size=args.ddp_world_size)
 
-    test_loader, train_loader, train_sampler = get_data_loaders(args)
+    train_loader, test_loader, train_sampler, test_sampler = get_data_loaders(args)
 
     logger.info("Siren configured with pos_encoding = ({},{}), hidden_size = {}, hidden_layers = {}".format(
         args.pos_encoding, args.rot_encoding, args.hidden_size, args.hidden_layers))
     model = Siren(hidden_size=args.hidden_size, hidden_layers=args.hidden_layers,
                   pos_encoding_levels=(args.pos_encoding, args.rot_encoding), dropout=args.dropout)\
         .to(rank, dtype=torch.float32)
+
+    state = {}
     if rank == 0:
-        if len(args.load_model_state) > 0:
-            model_path = os.path.join(args.model_path, args.load_model_state)
-            if not os.path.exists(model_path):
-                raise FileNotFoundError("Could not find model path {}".format(model_path))
-            logger.info("Loading model from {}".format(model_path))
-            model.load_state_dict(torch.load(model_path))
+        resume_path = os.path.join(args.model_path, args.resume_model_filename)
+        if os.path.exists(resume_path):
+            state = torch.load(resume_path)
+            logging.info("Found resume model file, resuming with epoch {}".format(state["epoch"]))
+        if "model_state" in state:
+            model.load_state_dict(state["model_state"])
             model.eval()
 
     if use_dist:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
 
-    if len(args.load_optim_state) > 0:
-        optim_path = os.path.join(args.model_path, args.load_optim_state)
-        if not os.path.exists(optim_path):
-            raise FileNotFoundError("Could not find optimizer path {}".format(optim_path))
-        logger.info("Loading optimizer state from {}".format(optim_path))
+    if "optimizer" in state:
         optimizer = optim.Adam(model.parameters())
-        optimizer.load_state_dict(torch.load(optim_path))
+        optimizer.load_state_dict(state["optimizer"])
     else:
         logger.info("Using Adam optimizer with LR = {}, Beta = ({}, {}), ".format(args.lr, args.beta1, args.beta2) +
                     "and Weight Decay {}".format(args.weight_decay))
         optimizer = optim.Adam(model.parameters(),
                                lr=args.lr, betas=(args.beta1, args.beta2),
                                weight_decay=args.weight_decay)
+
+    if "epoch" in state:
+        args.epoch_start = state["epoch"] + 1
 
     if args.schedule_step is not None and len(args.schedule_step) > 0:
         logger.info("Using StepLR Learning Rate Scheduler " +
@@ -418,25 +433,29 @@ def run(rank, args):
         scheduler = optim.lr_scheduler.MultiStepLR(optimizer, milestones=[args.epochs], gamma=1.0)
 
     scalar = torch.cuda.amp.GradScaler()
-    if len(args.load_scalar_state) > 0:
-        scalar_path = os.path.join(args.model_path, args.load_scalar_state)
-        if not os.path.exists(scalar_path):
-            raise FileNotFoundError("Could not find scalar path {}".format(scalar_path))
-        logger.info("Loading scalar state from {}".format(scalar_path))
-        scalar.load_state_dict(torch.load(scalar_path))
+    if "amp_scalar" in state:
+        scalar.load_state_dict(state["amp_scalar"])
 
     criterion = ModelLoss()
 
-    for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
+    for epoch in range(args.epoch_start, args.epochs + 1):
         logger.info("Starting epoch {} with LR {:.3e}".format(epoch, get_lr(optimizer)))
+        set_seed(args, epoch)
+
         if train_sampler is not None:
             train_sampler.set_epoch(epoch)
         train(args, logger, model, rank, train_loader, criterion, optimizer, scalar, epoch)
+
+        if test_sampler is not None:
+            test_sampler.set_epoch(epoch)
         test(args, logger, model, rank, test_loader, criterion, epoch)
+
         if rank == 0:
-            torch.save(model.state_dict(), join(args.model_path, "model_state_{}.pth".format(epoch)))
-            torch.save(optimizer.state_dict(), join(args.model_path, "optim_state_{}.pth".format(epoch)))
-            torch.save(scalar.state_dict(), join(args.model_path, "scalar_state_{}.pth".format(epoch)))
+            state = {"model_state": model.state_dict(),
+                     "optimizer": optimizer.state_dict(),
+                     "amp_scalar": scalar.state_dict(),
+                     "epoch": epoch}
+            torch.save(state, join(args.model_path, args.resume_model_filename))
         scheduler.step()
 
     if use_dist:
@@ -459,6 +478,13 @@ def main(custom_args=None):
     logger.info("\n*** Starting Siren Model {}".format(model_number))
     logger.info("Arguments: {}".format(args))
 
+    if len(args.load_model_state) > 0:
+        load_path = os.path.join(args.model_path, args.load_model_state)
+        if not os.path.exists(load_path):
+            raise FileNotFoundError("Could not find model path {}".format(load_path))
+        resume_path = os.path.join(args.model_path, args.resume_model_filename)
+        torch.save(torch.load(load_path), resume_path)
+
     if args.ddp_world_size < 1:
         raise AssertionError("DDP world size < 1")
     elif args.ddp_world_size > torch.cuda.device_count():
@@ -466,14 +492,18 @@ def main(custom_args=None):
                      args.ddp_world_size, torch.cuda.device_count()))
         args.ddp_world_size = torch.cuda.device_count()
 
-    logger.info("Using random seed " + str(args.seed))
-    torch.manual_seed(args.seed)
-
-    if dist.is_available():
-        mp.spawn(run, args=(args,), nprocs=args.ddp_world_size, join=True)
-    else:
-        args.ddp_world_size = 1
-        run(0, args)
+    except_count = 10
+    while except_count > 0:
+        try:
+            if dist.is_available():
+                mp.spawn(run, args=(args,), nprocs=args.ddp_world_size, join=True)
+            else:
+                args.ddp_world_size = 1
+                run(0, args)
+            break
+        except Exception as e:
+            logger.error("Encountered exception ({}) while training: {}".format(type(e), e.args[0]))
+            except_count -= 1
 
 
 if __name__ == '__main__':
