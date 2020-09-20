@@ -125,8 +125,8 @@ def train(args, logger, model, rank, train_loader, criterion, optimizer, scalar,
                                                     max_t=(args.random_max_t*min((epoch-1)/args.random_steps, 1.0)))
         loss_data = []
         for batch_idx, sample in enumerate(data_loader):
-            data_input = sample["inputs"].cuda(non_blocking=True)
-            data_actual = sample["outputs"].cuda(non_blocking=True)
+            data_input = sample["inputs"]
+            data_actual = sample["outputs"]
 
             model.zero_grad()
             with torch.cuda.amp.autocast():
@@ -234,14 +234,35 @@ def get_lr(optimizer):
         return param_group['lr']
 
 
+def get_logger(args):
+    logger = multiprocessing.get_logger()
+    if not len(logger.handlers):
+        logger.setLevel(logging.INFO)
+        log_formatter = logging.Formatter("%(asctime)s: %(message)s")
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(log_formatter)
+        logger.addHandler(stream_handler)
+
+        if len(args.log_file) > 0:
+            file_handler = logging.FileHandler(join(args.model_path, args.log_file))
+            file_handler.setFormatter(log_formatter)
+            logger.addHandler(file_handler)
+
+    return logger
+
+
 def get_data_loaders(args):
     position_scale = [1 / 4, 1 / 3, 1 / 3]
     dataset_path = [join('..', d) for d in args.dataset]
+    use_dist = args.ddp_world_size > 1
     train_set = dl.RandomSceneSirenFileListLoader(root_dir=dataset_path, dataset_seed=args.dataset_seed, is_test=False,
                                                   batch_size=args.batch_size, num_workers=args.num_workers,
                                                   pin_memory=(not args.dont_pin_memory), shuffle=True,
                                                   pos_scale=position_scale, importance=args.importance)
-    train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
+    if use_dist:
+        train_sampler = torch.utils.data.distributed.DistributedSampler(train_set)
+    else:
+        train_sampler = None
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.img_batch_size, sampler=train_sampler,
                                                shuffle=(train_sampler is None), collate_fn=train_set.collate_fn)
 
@@ -342,14 +363,18 @@ def arg_parser(input_args, model_number="06"):
     return args
 
 
-def run(rank, args, logger):
-    if not dist.is_available():
-        raise RuntimeError("Torch distributed is not available!")
+def run(rank, args):
+    logger = get_logger(args)
+    logger.info("Initializing rank {}".format(rank))
 
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
+    torch.cuda.set_device(rank)
 
-    dist.init_process_group(backend="nccl", rank=rank, world_size=args.ddp_world_size)
+    use_dist = args.ddp_world_size > 1
+
+    if use_dist:
+        dist.init_process_group(backend="nccl", rank=rank, world_size=args.ddp_world_size)
 
     test_loader, train_loader, train_sampler = get_data_loaders(args)
 
@@ -366,7 +391,9 @@ def run(rank, args, logger):
             logger.info("Loading model from {}".format(model_path))
             model.load_state_dict(torch.load(model_path))
             model.eval()
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
+
+    if use_dist:
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[rank], output_device=rank)
 
     if len(args.load_optim_state) > 0:
         optim_path = os.path.join(args.model_path, args.load_optim_state)
@@ -402,7 +429,8 @@ def run(rank, args, logger):
 
     for epoch in range(args.epoch_start, args.epochs + args.epoch_start):
         logger.info("Starting epoch {} with LR {:.3e}".format(epoch, get_lr(optimizer)))
-        train_sampler.set_epoch(epoch)
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
         train(args, logger, model, rank, train_loader, criterion, optimizer, scalar, epoch)
         test(args, logger, model, rank, test_loader, criterion, epoch)
         if rank == 0:
@@ -411,7 +439,8 @@ def run(rank, args, logger):
             torch.save(scalar.state_dict(), join(args.model_path, "scalar_state_{}.pth".format(epoch)))
         scheduler.step()
 
-    dist.destroy_process_group()
+    if use_dist:
+        dist.destroy_process_group()
 
 
 def main(custom_args=None):
@@ -425,17 +454,7 @@ def main(custom_args=None):
     if not os.path.exists(args.model_path):
         os.mkdir(args.model_path)
 
-    logger = multiprocessing.get_logger()
-    logger.setLevel(logging.INFO)
-    log_formatter = logging.Formatter("%(asctime)s: %(message)s")
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(log_formatter)
-    logger.addHandler(stream_handler)
-
-    if len(args.log_file) > 0:
-        file_handler = logging.FileHandler(join(args.model_path, args.log_file))
-        file_handler.setFormatter(log_formatter)
-        logger.addHandler(file_handler)
+    logger = get_logger(args)
 
     logger.info("\n*** Starting Siren Model {}".format(model_number))
     logger.info("Arguments: {}".format(args))
@@ -446,7 +465,11 @@ def main(custom_args=None):
     logger.info("Using random seed " + str(args.seed))
     torch.manual_seed(args.seed)
 
-    mp.spawn(run, args=(args,), nprocs=args.ddp_world_size, join=True)
+    if dist.is_available():
+        mp.spawn(run, args=(args,), nprocs=args.ddp_world_size, join=True)
+    else:
+        args.ddp_world_size = 1
+        run(0, args)
 
 
 if __name__ == '__main__':

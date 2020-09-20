@@ -174,15 +174,15 @@ class RandomSceneSirenFileListLoader(Dataset):
 
             image = 2.0 * image - 1.0
             image = image[:, :, 0:3][:, :, ::-1]
-            image_cuda = torch.from_numpy(image.copy())
+            image_cuda = torch.from_numpy(image.copy()).cuda(non_blocking=True)
 
             position = self.construct_positions(image.shape[0], image.shape[1], pos_group)
             theta, phi, angles_valid = self.construct_angles(image.shape[0], image.shape[1], rot_group)
 
             sample_count = torch.pow(2.0, edges).round().type(torch.long) * angles_valid
-            sample_count = sample_count.view((image.shape[0] * image.shape[1]))
+            sample_count = sample_count.view((image.shape[0] * image.shape[1])).cuda(non_blocking=True)
 
-            inputs = torch.cat((position, theta, phi), dim=2)
+            inputs = torch.cat((position, theta, phi), dim=2).cuda(non_blocking=True)
 
             samples.append({"filename": file_name,
                             "image": image_cuda,
@@ -250,7 +250,7 @@ class RandomSceneSirenSampleLoader:
             image_size = dims[0] * dims[1]
 
             index_linear = torch.linspace(index_size, index_size+image_size-1, image_size,
-                                          dtype=torch.long)
+                                          device=sample["sample_count"].device, dtype=torch.long)
             index_expanded = torch.repeat_interleave(index_linear, sample["sample_count"], dim=0)
             index_list.append(index_expanded)
             self.dims.append((dims[0], dims[1], index_size))
@@ -270,7 +270,7 @@ class RandomSceneSirenSampleLoader:
 
         self.num_batches = int(np.ceil(self.indices.shape[0] / self.batch_size))
         if self.shuffle:
-            shuffle_indices = torch.randperm(self.indices.shape[0], dtype=torch.long)
+            shuffle_indices = torch.randperm(self.indices.shape[0], device=self.indices.device, dtype=torch.long)
             self.indices = self.indices.index_select(0, shuffle_indices)
 
     def set_max_t(self, max_t):
@@ -305,7 +305,7 @@ class RandomSceneSirenSampleLoader:
         tmax_out = torch.clamp(torch.index_select(tmax, 1, tmax_index).diag(), 0, self.max_t)
 
         # Randomly select a vector between the two intersection points, update pos to that
-        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape) + tmin_out
+        t = (tmax_out - tmin_out) * torch.rand(tmax_out.shape, device=inputs.device) + tmin_out
         max_position = position + look * tmax_out.unsqueeze(1)
         min_position = position + look * tmin_out.unsqueeze(1)
         new_position = position + look * t.unsqueeze(1)
