@@ -365,7 +365,7 @@ def arg_parser(input_args, model_number="06"):
 
 def run(rank, args):
     logger = get_logger(args)
-    logger.info("Initializing rank {}".format(rank))
+    logger.info("Initializing rank {} process".format(rank))
 
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12355'
@@ -461,6 +461,10 @@ def main(custom_args=None):
 
     if args.ddp_world_size < 1:
         raise AssertionError("DDP world size < 1")
+    elif args.ddp_world_size > torch.cuda.device_count():
+        logger.error("DDP world size '{}' larger than GPU count '{}'!".format(
+                     args.ddp_world_size, torch.cuda.device_count()))
+        args.ddp_world_size = torch.cuda.device_count()
 
     logger.info("Using random seed " + str(args.seed))
     torch.manual_seed(args.seed)
@@ -474,3 +478,4 @@ def main(custom_args=None):
 
 if __name__ == '__main__':
     main()
+
