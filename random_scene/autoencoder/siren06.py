@@ -84,16 +84,18 @@ class Siren(nn.Module):
     def expand_pos_encoding(self, inputs):
         pmult = math.pi * torch.pow(2, torch.linspace(-1, self.pos_encoding_levels[0], self.pos_encoding_levels[0],
                                                       device=inputs.device))
-        pos = inputs[:, 0:3]
-        u = torch.bmm(pmult.unsqueeze(1).repeat(inputs.shape[0], 1, 1), pos.unsqueeze(1))
+        pmult = pmult.unsqueeze(1).repeat(inputs.shape[0], 1, 1)
+        pos = inputs[:, 0:3].unsqueeze(1)
+        u = torch.bmm(pmult, pos)
         u = u.view((inputs.shape[0], 3 * self.pos_encoding_levels[0]))
         sin_u = torch.sin(u)
         cos_u = torch.cos(u)
 
         rmult = math.pi * torch.pow(2, torch.linspace(-1, self.pos_encoding_levels[1], self.pos_encoding_levels[1],
                                                       device=inputs.device))
-        rot = inputs[:, 3:5]
-        v = torch.bmm(rmult.unsqueeze(1).repeat(inputs.shape[0], 1, 1), rot.unsqueeze(1))
+        rmult = rmult.unsqueeze(1).repeat(inputs.shape[0], 1, 1)
+        rot = inputs[:, 3:5].unsqueeze(1)
+        v = torch.bmm(rmult, rot)
         v = v.view((inputs.shape[0],2*self.pos_encoding_levels[1]))
         sin_v = torch.sin(v)
         cos_v = torch.cos(v)
@@ -115,10 +117,36 @@ class Siren(nn.Module):
                 logger.info("{}: weights {:.6f} ({:.6f})".format(k, m.weight.data.mean(), m.weight.data.std()))
 
 
+def train_amp(model, optimizer, criterion, scalar, data_input, data_actual):
+    model.zero_grad()
+    with torch.cuda.amp.autocast():
+        data_output = model(data_input)
+        loss = criterion(data_output, data_actual)
+    scalar.scale(loss).backward()
+    scalar.step(optimizer)
+    scalar.update()
+    return loss
+
+
+def train_std(model, optimizer, criterion, scalar, data_input, data_actual):
+    model.zero_grad()
+    data_output = model(data_input)
+    loss = criterion(data_output, data_actual)
+    loss.backward()
+    optimizer.step()
+    return loss
+
+
 def train(args, logger, model, rank, train_loader, criterion, optimizer, scalar, epoch):
     model.train()
     train_set = train_loader.dataset
     render_vector_count = 512*512
+
+    if args.use_amp:
+        train_fn = train_amp
+    else:
+        train_fn = train_std
+
     for image_idx, sample_list in enumerate(train_loader):
         if args.print_statistics:
             model.print_statistics(logger)
@@ -128,17 +156,10 @@ def train(args, logger, model, rank, train_loader, criterion, optimizer, scalar,
         for batch_idx, sample in enumerate(data_loader):
             data_input = sample["inputs"]
             data_actual = sample["outputs"]
-
-            model.zero_grad()
-            with torch.cuda.amp.autocast():
-                data_output = model(data_input)
-                loss = criterion(data_output, data_actual)
-            scalar.scale(loss).backward()
-            scalar.step(optimizer)
-            scalar.update()
+            loss = train_fn(model, optimizer, criterion, scalar, data_input, data_actual)
             loss_data.append(loss.item())
 
-        if args.log_interval > 0 and image_idx % args.log_interval == 0:
+        if args.log_interval > 0 and image_idx % args.log_interval == 0 and rank == 0:
             if args.train_image_interval > 0 and (image_idx / args.log_interval) % args.train_image_interval == 0:
                 with torch.no_grad():
                     torch.cuda.empty_cache()
@@ -181,7 +202,7 @@ def test(args, logger, model, rank, test_loader, criterion, epoch):
                 data_output = model(data_input)
                 test_loss.append(criterion(data_output, data_actual).item())
 
-            if image_idx % img_save_modulus == 0:
+            if image_idx % img_save_modulus == 0 and rank == 0:
                 torch.cuda.empty_cache()
                 sample = data_loader.get_in_order_sample()
                 data_input = sample["inputs"]
@@ -200,12 +221,13 @@ def test(args, logger, model, rank, test_loader, criterion, epoch):
                            nrow=1)
             torch.cuda.empty_cache()
 
-            if len(test_loss) > 1:
-                m, s, b = get_loss_stats(test_loss)
-                loss_value = "{:.3e} ({:.3e}, {:.3e})".format(m, s, b)
-            else:
-                loss_value = "{:.3e}".format(test_loss[0])
-            logger.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
+            if rank == 0:
+                if len(test_loss) > 1:
+                    m, s, b = get_loss_stats(test_loss)
+                    loss_value = "{:.3e} ({:.3e}, {:.3e})".format(m, s, b)
+                else:
+                    loss_value = "{:.3e}".format(test_loss[0])
+                logger.info('Test set ({:.0f}%) loss: {}'.format(100. * (image_idx+1) / len(test_loader), loss_value))
 
 
 def convert_image(data, dims):
@@ -357,6 +379,8 @@ def arg_parser(input_args, model_number="06"):
 
     parser.add_argument('--ddp-world-size', type=int, default=1, metavar='NGPU',
                         help='number of GPUs to use in parallel')
+    parser.add_argument('--use-amp', action='store_true', default=False,
+                        help='use NVIDIA AMP (automatic mixed precision) for training')
 
     parser.add_argument('--hidden-size', type=int, default=256, metavar='H',
                         help='Hidden layer size of Siren (default: 256)')
