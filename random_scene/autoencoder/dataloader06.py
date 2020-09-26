@@ -250,7 +250,7 @@ class RandomSceneSirenSampleLoader:
             image_size = dims[0] * dims[1]
 
             index_linear = torch.linspace(index_size, index_size+image_size-1, image_size,
-                                          device=sample["sample_count"].device, dtype=torch.long)
+                                          device=sample["sample_count"].device, dtype=torch.float64).to(torch.long)
             index_expanded = torch.repeat_interleave(index_linear, sample["sample_count"], dim=0)
             index_list.append(index_expanded)
             self.dims.append((dims[0], dims[1], index_size))
