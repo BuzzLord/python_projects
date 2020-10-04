@@ -165,8 +165,7 @@ class RandomSceneSirenFileListLoader(Dataset):
             elif vg.group(1) == "4":
                 fg = match("ss([1234])_([0-9]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9.+-]*)_([0-9e.+-]*)_([0-9e.+-]*)_([lrg]).png",
                            basename(file_name))
-                #fov = 180.0
-                fov = 90.0
+                fov = 180.0
                 frame_num = 0.0
                 pos_group = (float(fg.group(3)), float(fg.group(4)), float(fg.group(5)))
                 rot_group = (float(fg.group(6)), float(fg.group(7)))
